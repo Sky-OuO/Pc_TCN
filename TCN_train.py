@@ -162,16 +162,18 @@ class SatelliteCollisionDataset(Dataset):
 
 
 class LogSpaceHuberLoss(nn.Module):
-    def __init__(self, delta=1.0):
+    def __init__(self, delta=1.0, alpha=1.5):
         super().__init__()
         self.delta = delta
+        self.alpha = alpha  
 
     def forward(self, log_predictions, log_targets):
         diff = log_predictions - log_targets
         abs_diff = torch.abs(diff)
-        quadratic = torch.clamp(abs_diff, max=self.delta)
-        linear = abs_diff - quadratic
-        loss = 0.5 * quadratic ** 2 + self.delta * linear
+        quadratic = 0.5 * abs_diff ** 2
+        power = self.delta ** (2 - self.alpha) / self.alpha * abs_diff ** self.alpha \
+                + self.delta ** 2 * (1.0 / 2.0 - 1.0 / self.alpha)
+        loss = torch.where(abs_diff <= self.delta, quadratic, power)
         return loss.mean()
 
 
@@ -463,7 +465,7 @@ if __name__ == "__main__":
     
     model_param = {
         'input_size': train_features.shape[2],
-        'num_channels': [32, 32, 64, 64, 128, 128], 
+        'num_channels': [32, 32, 64, 64, 64, 128, 128], 
         'kernel_size': 5,
         'dropout': 0.2
     }
@@ -478,7 +480,7 @@ if __name__ == "__main__":
     model = TCN(**model_param)
     print(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
     
-    criterion = LogSpaceHuberLoss(delta=0.5)
+    criterion = LogSpaceHuberLoss(delta=0.5, alpha=1.5)
     
     num_epochs = 300
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
