@@ -46,6 +46,7 @@ python data_collection_pipline.py
 
 Generates time-series orbital features from TLE data using SGP4 propagation:
 
+- Directly converts each collected event into one feature sequence without synthetic augmentation.
 - Propagates both satellites backward from TCA (Time of Closest Approach) over a configurable time window.
 - Computes per-timestep features at each point:
   - **Relative dynamics**: distance, closure rate, relative speed, radial/tangential velocity components, relative position & velocity vectors

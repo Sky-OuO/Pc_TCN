@@ -115,61 +115,6 @@ def feature_generator_iterater(train_data):
         labels.append(float(pc_gt))
     return np.array(features), np.array(labels)
 
-
-def augment_sparse_bins(all_data, min_samples=300, tca_offsets_sec=(-5, -3, 3, 5), seed=42):
-    rng = np.random.RandomState(seed)
-    bin_edges = [-30, -8, -7, -6, -5, -4, -3, -2, -1, 0.01]
-
-    # Bin the data
-    binned = {i: [] for i in range(len(bin_edges) - 1)}
-    for unit in all_data:
-        pc = float(unit.get("pc_gt", 0))
-        if pc <= 0:
-            continue
-        log_pc = math.log10(pc)
-        for i in range(len(bin_edges) - 1):
-            if bin_edges[i] <= log_pc < bin_edges[i + 1]:
-                binned[i].append(unit)
-                break
-
-    aug_features, aug_labels = [], []
-    for i, items in binned.items():
-        count = len(items)
-        if count == 0 or count >= min_samples:
-            continue
-        n_needed = min_samples - count
-        print(f"  Bin [{bin_edges[i]:+.0f}, {bin_edges[i+1]:+.0f}): {count} samples, augmenting {n_needed} more")
-
-        generated = 0
-        while generated < n_needed:
-            unit = items[rng.randint(len(items))]
-            offset = rng.choice(tca_offsets_sec)
-
-            try:
-                tle_1 = unit["sat_1"]
-                tle_2 = unit["sat_2"]
-                tca_time = datetime.strptime(unit["TCA"], "%Y-%m-%d %H:%M:%S.%f")
-                shifted_tca = tca_time + timedelta(seconds=float(offset))
-
-                fg = Feature_Generator(
-                    tle_1[0].strip(), tle_1[1],
-                    tle_2[0].strip(), tle_2[1],
-                    shifted_tca
-                )
-                positions, velocities, times = fg.generate_tca_centered_data(
-                    delta_t_minutes=25, time_step_seconds=10
-                )
-                feat = fg.calculate_relative_features(positions, velocities, times)
-                if len(feat) > 0:
-                    aug_features.append(feat)
-                    aug_labels.append(float(unit["pc_gt"]))
-                    generated += 1
-            except Exception:
-                continue
-
-    print(f"generated {len(aug_labels)} total new samples")
-    return aug_features, aug_labels
-
 def plot_label_distribution(labels, save_path_prefix="labels_dist"):
     labels = np.array(labels)
     positive = labels[labels > 0]
@@ -188,19 +133,11 @@ def plot_label_distribution(labels, save_path_prefix="labels_dist"):
 if __name__ == "__main__":
     total_features = []
     total_labels = []
-    all_raw_data = []
     for data_files in glob.glob("data/*.json"):
         train_data = json.load(open(data_files, "r"))
-        all_raw_data.extend(train_data)
         features, labels = feature_generator_iterater(train_data)
         total_features.append(features)
         total_labels.append(labels)
-
-    print("\nAugmenting sparse bins via TCA time perturbation...")
-    aug_features, aug_labels = augment_sparse_bins(all_raw_data, min_samples=300)
-    if aug_features:
-        total_features.append(np.array(aug_features))
-        total_labels.append(np.array(aug_labels))
 
     all_features = np.concatenate(total_features, axis=0)
     all_labels = np.concatenate(total_labels, axis=0)

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
@@ -197,6 +197,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             batch_labels = batch_labels.to(device)
             targets = torch.clamp(batch_labels, min=eps)
             log_targets = torch.log10(targets)
+            log_targets = torch.clamp(log_targets, min=-9.0, max=-0.3)
 
             optimizer.zero_grad()
             log_outputs = model(batch_features)           
@@ -466,7 +467,7 @@ if __name__ == "__main__":
     model_param = {
         'input_size': train_features.shape[2],
         'num_channels': [32, 32, 64, 64, 64, 128, 128], 
-        'kernel_size': 5,
+        'kernel_size': 7,
         'dropout': 0.2
     }
 
@@ -480,11 +481,13 @@ if __name__ == "__main__":
     model = TCN(**model_param)
     print(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
     
-    criterion = LogSpaceHuberLoss(delta=0.5, alpha=1.5)
+    criterion = LogSpaceHuberLoss(delta=0.3, alpha=1.5)
     
     num_epochs = 300
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=1e-6)
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=10)
+    cosine_scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=1e-6)
+    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[10])
     
     trained_model = train_model(
         model, train_loader, val_loader, criterion, optimizer, scheduler,
