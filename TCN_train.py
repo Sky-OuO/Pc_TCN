@@ -386,20 +386,46 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cpu'):
     print(f"  Log10-Median:    {log10_median:.4f} orders of magnitude")
 
     
+    def format_breakdown_value(value, suffix=''):
+        if value is None:
+            return '-'
+        return f"{value:.1f}{suffix}" if suffix else f"{value:+.4f}" if value < 0 else f"{value:.4f}"
+
     # Per-decade breakdown
     print(f"\n{'─'*75}")
     print(f"{'Pc Range':<18} {'Count':>6} {'Bias(μ)':>9} {'1σ':>8} {'In 1σ':>8} {'In 2σ':>8}")
     print(f"{'─'*75}")
     decades = [(-10, -8),(-8, -6),(-6, -5),
                (-5, -4),(-4, -3),(-3, -2),(-2, 0)]
+    breakdown_rows = []
     for low, high in decades:
         mask = (log_gts >= low) & (log_gts < high)
-        if np.sum(mask) > 0:
-            d_bias = np.mean(log10_signed_errors[mask])
-            d_sigma = np.std(log10_signed_errors[mask])
-            d_in1s = np.mean(log10_errors[mask] < d_sigma) * 100.0
-            d_in2s = np.mean(log10_errors[mask] < 2 * d_sigma) * 100.0
-            print(f"[1e{low:+.0f}, 1e{high:+.0f})  {np.sum(mask):>6d}   {d_bias:>+8.4f} {d_sigma:>8.4f} {d_in1s:>7.1f}% {d_in2s:>7.1f}%")
+        count = int(np.sum(mask))
+        if count > 0:
+            d_bias = float(np.mean(log10_signed_errors[mask]))
+            d_sigma = float(np.std(log10_signed_errors[mask]))
+            d_in1s = float(np.mean(log10_errors[mask] < d_sigma) * 100.0)
+            d_in2s = float(np.mean(log10_errors[mask] < 2 * d_sigma) * 100.0)
+        else:
+            d_bias = None
+            d_sigma = None
+            d_in1s = None
+            d_in2s = None
+
+        breakdown_rows.append({
+            'pc_interval': f"[1e{low:+.0f}, 1e{high:+.0f})",
+            'count': count,
+            'bias': d_bias,
+            'sigma': d_sigma,
+            'within_1sigma': d_in1s,
+            'within_2sigma': d_in2s,
+        })
+
+        print(
+            f"{breakdown_rows[-1]['pc_interval']:<18} {count:>6d} "
+            f"{format_breakdown_value(d_bias):>9} {format_breakdown_value(d_sigma):>8} "
+            f"{format_breakdown_value(d_in1s, '%'):>8} {format_breakdown_value(d_in2s, '%'):>8}"
+        )
     
     # Worst predictions analysis
     print(f"\n{'─'*70}")
@@ -411,15 +437,20 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cpu'):
               f"log10 err: {log_preds[idx] - log_gts[idx]:+.3f}  "
               f"(GT decade: 1e{int(np.floor(log_gts[idx]))})")
     
-    #Scatter plot
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    # Scatter plot + evaluation table
+    fig = plt.figure(figsize=(16, 10))
+    gs = fig.add_gridspec(2, 2, height_ratios=[3, 2.2])
+    axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])]
+    scatter_fontsize = 14
+    title_fontsize = 16
+    legend_fontsize = 11
+    tick_fontsize = 12
     
     # Left: pred vs gt
     ax = axes[0]
     scatter = ax.scatter(log_gts, log_preds, c=log10_errors, cmap='RdYlGn_r', 
                         alpha=0.6, s=12, vmin=0, vmax=3)
-    lims = [min(log_gts.min(), log_preds.min()) - 0.5, 
-            max(log_gts.max(), log_preds.max()) + 0.5]
+    lims = [-10, 0]
     ax.plot(lims, lims, 'r--', linewidth=1, label='Perfect')
     ax.plot(lims, [l + sigma for l in lims], 'b:', linewidth=0.8, alpha=0.5, label=f'±1σ ({sigma:.2f})')
     ax.plot(lims, [l - sigma for l in lims], 'b:', linewidth=0.8, alpha=0.5)
@@ -428,12 +459,15 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cpu'):
     ax.set_xlim(lims)
     ax.set_ylim(lims)
     ax.set_aspect('equal', adjustable='box')
-    ax.set_xlabel('Ground Truth log10(Pc)')
-    ax.set_ylabel('Predicted log10(Pc)')
-    ax.set_title(f'Prediction vs GT (1σ={sigma:.3f} orders)')
-    ax.legend(fontsize=8)
+    ax.set_xlabel('Ground Truth log10(Pc)', fontsize=scatter_fontsize)
+    ax.set_ylabel('Predicted log10(Pc)', fontsize=scatter_fontsize)
+    ax.set_title(f'Prediction vs GT (1σ={sigma:.3f} orders)', fontsize=title_fontsize)
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+    ax.legend(fontsize=legend_fontsize)
     ax.grid(True, alpha=0.3)
-    plt.colorbar(scatter, ax=ax, label='log10 error')
+    colorbar = plt.colorbar(scatter, ax=ax)
+    colorbar.set_label('log10 error', fontsize=scatter_fontsize)
+    colorbar.ax.tick_params(labelsize=tick_fontsize)
     
     # Right: signed error distribution with sigma bands
     ax2 = axes[1]
@@ -443,11 +477,44 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cpu'):
     ax2.axvline(x=2*sigma, color='g', linestyle='--', alpha=0.5, label=f'±2σ ({2*sigma:.3f})')
     ax2.axvline(x=-2*sigma, color='g', linestyle='--', alpha=0.5)
     ax2.axvline(x=mean_bias, color='orange', linestyle='-', linewidth=2, label=f'Bias={mean_bias:+.3f}')
-    ax2.set_xlabel('Signed Log10 Error (orders of magnitude)')
-    ax2.set_ylabel('Count')
-    ax2.set_title('Error Distribution (Signed)')
-    ax2.legend(fontsize=8)
+    ax2.set_xlabel('Signed Log10 Error (orders of magnitude)', fontsize=scatter_fontsize)
+    ax2.set_ylabel('Count', fontsize=scatter_fontsize)
+    ax2.set_title('Error Distribution (Signed)', fontsize=title_fontsize)
+    ax2.tick_params(axis='both', labelsize=tick_fontsize)
+    ax2.legend(fontsize=legend_fontsize)
     ax2.grid(True, alpha=0.3)
+
+    table_ax = fig.add_subplot(gs[1, :])
+    table_ax.axis('off')
+    table_ax.set_title('Evaluation Set Group Performance Breakdown', fontsize=title_fontsize, pad=12)
+
+    table_rows = [
+        [
+            row['pc_interval'],
+            str(row['count']),
+            format_breakdown_value(row['bias']),
+            format_breakdown_value(row['sigma']),
+            format_breakdown_value(row['within_1sigma'], '%'),
+            format_breakdown_value(row['within_2sigma'], '%'),
+        ]
+        for row in breakdown_rows
+    ]
+    table = table_ax.table(
+        cellText=table_rows,
+        colLabels=['Pc interval', 'Count', 'Bias', '1σ', 'Within 1σ', 'Within 2σ'],
+        cellLoc='center',
+        loc='center',
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(12)
+    table.scale(1, 1.5)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_linewidth(0.6)
+        if row == 0:
+            cell.set_text_props(weight='bold')
+            cell.set_facecolor('#d9e6f2')
+        elif row % 2 == 1:
+            cell.set_facecolor('#f7f7f7')
     
     plt.tight_layout()
     plt.savefig('prediction_scatter.png', dpi=150)
