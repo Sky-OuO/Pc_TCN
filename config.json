@@ -1,0 +1,40 @@
+{
+    "data": {
+        "feature_path": "features.npy",
+        "label_path": "labels.npy",
+        "test_size": 0.2,
+        "random_state": 42,
+        "seq_length": 601
+    },
+    "model": {
+        "num_channels": [32, 32, 64, 64, 64, 128, 128],
+        "kernel_size": 7,
+        "dropout": 0.2
+    },
+    "loss": {
+        "delta": 0.3,
+        "alpha": 1.5
+    },
+    "training": {
+        "num_epochs": 300,
+        "batch_size": 32,
+        "patience": 50,
+        "log_target_min": -9.0,
+        "log_target_max": -0.3
+    },
+    "optimizer": {
+        "lr": 1e-3,
+        "weight_decay": 1e-4
+    },
+    "scheduler": {
+        "warmup_start_factor": 0.01,
+        "warmup_total_iters": 10,
+        "cosine_T_0": 50,
+        "cosine_T_mult": 2,
+        "cosine_eta_min": 1e-6,
+        "milestone": 10
+    },
+    "sampler": {
+        "bin_edges": [-10, -8, -7, -6, -5, -4.5, -4, -3.5, -3, -2, -1, 0]
+    }
+}

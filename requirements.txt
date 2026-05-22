@@ -1,9 +1,10 @@
 pandas
-numpy
+numpy  --
 requests
 scikit-learn
 matplotlib
 sgp4
 lxml
+tqdm
 torch --extra-index-url https://download.pytorch.org/whl/cu128
 torchvision --extra-index-url https://download.pytorch.org/whl/cu128
