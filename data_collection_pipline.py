@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 import time
+import io
 import requests
 from collections import defaultdict
 import os
@@ -36,6 +37,26 @@ class DataCollectionPipeline:
             print(f"  [Rate limit] Waiting {wait:.1f}s...")
             time.sleep(wait)
         self._last_request_time = time.time()
+
+    def _get_with_retry(self, url, max_403_retries=3):
+        """GET with automatic 2-hour sleep on 403 Forbidden."""
+        for attempt in range(max_403_retries):
+            try:
+                resp = requests.get(url, timeout=30)
+                if resp.status_code == 403:
+                    wait = 7200
+                    print(f"\n  [403 Forbidden] CelesTrak rejected request. "
+                          f"Sleeping {wait // 3600}h before retry "
+                          f"({attempt + 1}/{max_403_retries})...")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp
+            except requests.exceptions.RequestException as e:
+                print(f"  Request error: {e}")
+                return None
+        print(f"  [403] Max retries reached, skipping: {url}")
+        return None
 
     def get_bin_for_probability(self, pc):
         pc = float(pc)
@@ -102,19 +123,23 @@ class DataCollectionPipeline:
         
         try:
             print(f"Querying satellite {norad_id}...", end='')
-            tables = pd.read_html(url)
+            resp = self._get_with_retry(url)
+            if resp is None:
+                print(" ✗ Failed")
+                return []
+            tables = pd.read_html(io.StringIO(resp.text))
             
             if tables and len(tables) > 3:
                 df = tables[3].values
                 result, _ = self.parse_celestrak_data(df)
-                print(f"Retrieved {len(result)} events")
+                print(f" Retrieved {len(result)} events")
                 return result
             else:
                 print(" ✗ No data")
                 return []
                 
         except Exception as e:
-            print(f"Failed: {e}")
+            print(f" Failed: {e}")
             return []
     
     def parse_celestrak_data(self, df):
@@ -134,6 +159,7 @@ class DataCollectionPipeline:
         
         for index, row in enumerate(df):
             norad_id = safe_get(row, 1)
+            sat_name = safe_get(row, 2)
             if isinstance(norad_id, int):
                 norad_id = str(norad_id)
             if not norad_id or len(str(norad_id)) > 5:
@@ -142,7 +168,6 @@ class DataCollectionPipeline:
             if norad_id not in sat_ids:
                 sat_ids.append(norad_id)
             
-            Day_since_epoch = safe_get(row, 3)
             tca = safe_get(row, 4)
             num_index = index // 2
             
@@ -150,18 +175,14 @@ class DataCollectionPipeline:
                 Pc_gt = safe_get(row, 5)
                 result[num_index].update({
                     "norad_id_2": norad_id,
-                    "Day_since_epoch_2": Day_since_epoch,
+                    "sat_name_2": sat_name,
                     "TCA": tca,
                     "Pc_gt": Pc_gt
                 })
             else:
-                min_range = safe_get(row, 5)
-                relative_velocity = safe_get(row, 6)
                 result[num_index].update({
                     "norad_id_1": norad_id,
-                    "Day_since_epoch_1": Day_since_epoch,
-                    "min_range": min_range,
-                    "relative_velocity": relative_velocity
+                    "sat_name_1": sat_name
                 })
         
         return result, sat_ids
@@ -174,16 +195,18 @@ class DataCollectionPipeline:
         # Get Top10 high-risk satellites
         url = "https://celestrak.org/SOCRATES/table-socrates.php?NAME=,&ORDER=MAXPROB&MAX=10"
         try:
-            tables = pd.read_html(url)
-            if tables:
-                df = tables[3].values
-                initial_data, sat_ids = self.parse_celestrak_data(df)
-                
-                self.all_data.extend(initial_data)
-                self.seed_pool.update(sat_ids)
-                
-                print(f"Initial seed pool: {len(self.seed_pool)} satellites")
-                print(f"Initial data: {len(initial_data)} events")
+            resp = self._get_with_retry(url)
+            if resp:
+                tables = pd.read_html(io.StringIO(resp.text))
+                if tables and len(tables) > 3:
+                    df = tables[3].values
+                    initial_data, sat_ids = self.parse_celestrak_data(df)
+                    
+                    self.all_data.extend(initial_data)
+                    self.seed_pool.update(sat_ids)
+                    
+                    print(f"Initial seed pool: {len(self.seed_pool)} satellites")
+                    print(f"Initial data: {len(initial_data)} events")
                 
         except Exception as e:
             print(f"Initialization failed: {e}")
@@ -262,8 +285,8 @@ class DataCollectionPipeline:
                 resp = requests.get(url, timeout=15)
 
                 if resp.status_code == 403:
-                    wait_time = 60 * (attempt + 1)
-                    print(f"  403 for {norad_id}, waiting {wait_time}s "
+                    wait_time = 7200
+                    print(f"  [403 Forbidden] Sleeping {wait_time // 3600}h "
                           f"(attempt {attempt+1}/{max_retries})...")
                     time.sleep(wait_time)
                     continue
@@ -336,18 +359,16 @@ class DataCollectionPipeline:
                 continue
             pc = item.get('Pc_gt', 0)
             try:
-                pc_val = float(pc)
-                if pc_val >= 0.01:
-                    pc_str = f"{pc_val:.3E}"
-                else:
-                    pc_str = f"{pc_val:.3E}"
+                pc_str = f"{float(pc):.3E}"
             except (ValueError, TypeError):
                 pc_str = str(pc)
 
             output.append({
                 "TCA": item.get('TCA', ''),
                 "pc_gt": pc_str,
+                "sat_1_name": item.get('sat_name_1', ''),
                 "sat_1": tle_1,
+                "sat_2_name": item.get('sat_name_2', ''),
                 "sat_2": tle_2
             })
 
@@ -356,6 +377,15 @@ class DataCollectionPipeline:
         print(f"  Final output: {len(output)} events with TLE data")
         return output
     
+    def save_results(self, timestamp=None):
+        self.fetch_all_tles()
+        formatted = self.format_output()
+        path = f"data/collected_tle_datas_{timestamp}.json"
+        with open(path, "w") as f:
+            json.dump(formatted, f, indent=4)
+        print(f"  Checkpoint saved: {path} ({len(formatted)} events)")
+        return formatted
+
     def collect(self):
         print("\n" + "="*60)
         print("Starting Smart Adaptive Data Collection")
@@ -367,7 +397,7 @@ class DataCollectionPipeline:
         initial_expansion = self.expand_from_seeds(list(self.seed_pool))
         self.all_data.extend(initial_expansion)
         self.deduplicate()
-
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
         for iteration in range(1, self.max_iterations + 1):
             print(f"\n{'='*60}")
             print(f"Iteration {iteration}")
@@ -411,6 +441,10 @@ class DataCollectionPipeline:
                     print("✗ Seed pool exhausted")
                     break
             
+            # Save checkpoint before this iteration's expansion
+            print(f"\nSaving checkpoint before iteration {iteration} expansion...")
+            self.save_results(timestamp=timestamp)
+
             # Expand new seeds
             print(f"\nQuerying {len(new_seeds)} new satellites...")
             new_data = self.expand_from_seeds(new_seeds)
@@ -459,15 +493,5 @@ if __name__ == "__main__":
     collector = DataCollectionPipeline(config)
     data = collector.collect()
     
-    # Save results
-    if os.path.exists("data/collected_tle_datas.json"):
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        path_name = f"data/collected_tle_datas_{timestamp}.json"
-    else:
-        path_name = "data/collected_tle_datas.json"
-
-    with open(path_name, "w") as f:
-        json.dump(data, f, indent=4)
     
-    print(f"\nData saved to '{path_name}'")
     print(f"Total {len(data)} collision events with TLE data")

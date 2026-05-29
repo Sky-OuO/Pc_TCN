@@ -1,7 +1,7 @@
 {
     "data": {
-        "feature_path": "features.npy",
-        "label_path": "labels.npy",
+        "feature_path": "params/features.npy",
+        "label_path": "params/labels.npy",
         "test_size": 0.2,
         "random_state": 42,
         "seq_length": 601
@@ -36,5 +36,29 @@
     },
     "sampler": {
         "bin_edges": [-10, -8, -7, -6, -5, -4.5, -4, -3.5, -3, -2, -1, 0]
+    },
+    "uncertainty_encoder": {
+        "d_model": 32,
+        "num_heads": 4,
+        "dropout": 0.1
+    },
+    "debris_phase": {
+        "threshold_a_years": 2.0,
+        "threshold_b_years": 7.0
+    },
+    "fds": {
+        "enabled": true,
+        "bucket_num": 100,
+        "ks": 5,
+        "sigma": 2,
+        "momentum": 0.9,
+        "start_update": 0,
+        "start_smooth": 1
+    },
+    "lds": {
+        "num_bins": 100,
+        "kernel": "gaussian",
+        "ks": 5,
+        "sigma": 2
     }
 }
