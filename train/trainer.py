@@ -47,7 +47,8 @@ def _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
     return train_loss / len(train_loader.dataset)
 
 
-def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10):
+def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10,
+                        log_target_min=-9.0, log_target_max=-0.3):
     model.eval()
     val_loss = 0.0
     all_log_preds, all_log_targets = [], []
@@ -56,12 +57,13 @@ def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10):
             batch_features  = batch_features.to(device)
             batch_labels    = batch_labels.to(device)
             targets_clamped = torch.clamp(batch_labels, min=eps)
-            log_targets     = torch.log10(targets_clamped)
+            log_targets     = torch.clamp(torch.log10(targets_clamped),
+                                          min=log_target_min, max=log_target_max)
             log_outputs     = model(batch_features)
             loss            = criterion(log_outputs, log_targets)
             val_loss       += loss.item() * batch_features.size(0)
             all_log_preds.extend(log_outputs.cpu().numpy().flatten())
-            all_log_targets.extend(torch.log10(targets_clamped).cpu().numpy().flatten())
+            all_log_targets.extend(log_targets.cpu().numpy().flatten())
 
     val_loss /= len(val_loader.dataset)
     log_mae   = np.mean(np.abs(np.array(all_log_preds) - np.array(all_log_targets)))
@@ -99,7 +101,9 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             model.FDS.update_running_stats(all_feats.to(device), all_bins.to(device), epoch)
             model.train()
 
-        val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device)
+        val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device,
+                                                  log_target_min=log_target_min,
+                                                  log_target_max=log_target_max)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)

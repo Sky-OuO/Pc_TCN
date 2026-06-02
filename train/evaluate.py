@@ -25,17 +25,17 @@ def load_best_model(model_param, device):
     return model
 
 
-def run_inference(model, val_features, val_labels, device):
-    val_dataset = SatelliteCollisionDataset(val_features, val_labels)
+def run_inference(model, val_features, val_labels, device, seq_length=601):
+    val_dataset = SatelliteCollisionDataset(val_features, val_labels, seq_length=seq_length)
     val_loader  = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    all_preds, all_gts = [], []
+    all_log_preds, all_gts = [], []
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
             log_prob = model(batch_features)
-            all_preds.extend((10.0 ** log_prob).cpu().numpy().flatten())
+            all_log_preds.extend(log_prob.cpu().numpy().flatten())
             all_gts.extend(batch_labels.numpy().flatten())
-    return np.array(all_preds), np.array(all_gts)
+    return np.array(all_log_preds), np.array(all_gts)
 
 
 def compute_global_metrics(log_preds, log_gts):
@@ -203,13 +203,15 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows):
     print(f"\nPlots saved to 'figures/prediction_scatter.png'")
 
 
-def evaluate_best_model(model_param, val_features, val_labels, device='cpu', log_path=f'logs/eval_results_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log'):
+def evaluate_best_model(model_param, val_features, val_labels, device='cpu',
+                        seq_length=601, log_path=None):
+    if log_path is None:
+        log_path = f'logs/eval_results_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log'
 
     eps                        = 1e-10
     model                      = load_best_model(model_param, device)
-    all_preds, all_gts         = run_inference(model, val_features, val_labels, device)
-    log_preds                  = np.log10(np.maximum(all_preds, eps))
-    log_gts                    = np.log10(np.maximum(all_gts,   eps))
+    log_preds, all_gts         = run_inference(model, val_features, val_labels, device, seq_length)
+    log_gts                    = np.log10(np.maximum(all_gts, eps))
     metrics                    = compute_global_metrics(log_preds, log_gts)
     breakdown_rows             = compute_breakdown(log_preds, log_gts, metrics['sigma'])
 

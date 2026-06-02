@@ -45,21 +45,23 @@ if __name__ == "__main__":
     }
 
     lds_cfg       = cfg.get('lds', {})
+    log_target_min = cfg['training']['log_target_min']
+    log_target_max = cfg['training']['log_target_max']
     train_weights = compute_lds_weights(
         train_labels,
         num_bins=lds_cfg.get('num_bins', 100),
         lds_kernel=lds_cfg.get('kernel', 'gaussian'),
         lds_ks=lds_cfg.get('ks', 5),
         lds_sigma=lds_cfg.get('sigma', 2),
+        log_min=log_target_min,
+        log_max=log_target_max,
     )
     train_dataset = SatelliteCollisionDataset(
-        train_features, train_labels, seq_length=cfg['data']['seq_length'],
-        sample_weights=train_weights)
+        train_features, train_labels, seq_length=cfg['data']['seq_length'])
     val_dataset   = SatelliteCollisionDataset(
         val_features, val_labels, seq_length=cfg['data']['seq_length'])
 
     # WeightedRandomSampler guarantees rare samples appear in every batch.
-    # LDS weights (stored in train_dataset.sample_weights) double as sampling weights.
     sampler = WeightedRandomSampler(
         weights=train_weights.tolist(),
         num_samples=len(train_weights),
@@ -110,4 +112,5 @@ if __name__ == "__main__":
         log_target_min=cfg['training']['log_target_min'],
         log_target_max=cfg['training']['log_target_max'],
     )
-    evaluate_best_model(model_param, val_features, val_labels, device=device)
+    evaluate_best_model(model_param, val_features, val_labels, device=device,
+                        seq_length=cfg['data']['seq_length'])

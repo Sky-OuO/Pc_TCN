@@ -30,8 +30,8 @@ def engineer_features(features):
 def load_data(feature_path, label_path, test_size=0.2, random_state=42):
     features, labels             = load_raw_data(feature_path, label_path)
     train_indices, val_indices   = split_indices(len(features), test_size, random_state)
-    features                     = normalize_features(features, train_indices)
-    features                     = engineer_features(features)
+    features                     = engineer_features(features)   # diff computed on raw scale
+    features                     = normalize_features(features, train_indices)  # normalize all 46 features together
     train_features, val_features = features[train_indices], features[val_indices]
     train_labels,   val_labels   = labels[train_indices],   labels[val_indices]
     return train_features, train_labels, val_features, val_labels
