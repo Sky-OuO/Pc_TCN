@@ -1,11 +1,11 @@
 import json
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
-from train.loss import LogSpaceHuberLoss
+from train.loss import LogSpaceHuberLoss, BerhuLoss
 from train.trainer import train_model
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
@@ -58,16 +58,28 @@ if __name__ == "__main__":
     val_dataset   = SatelliteCollisionDataset(
         val_features, val_labels, seq_length=cfg['data']['seq_length'])
 
+    # WeightedRandomSampler guarantees rare samples appear in every batch.
+    # LDS weights (stored in train_dataset.sample_weights) double as sampling weights.
+    sampler = WeightedRandomSampler(
+        weights=train_weights.tolist(),
+        num_samples=len(train_weights),
+        replacement=True,
+    )
     train_loader = DataLoader(
-        train_dataset, batch_size=cfg['training']['batch_size'], shuffle=True)
+        train_dataset, batch_size=cfg['training']['batch_size'], sampler=sampler)
     val_loader = DataLoader(
         val_dataset, batch_size=cfg['training']['batch_size'], shuffle=False)
 
     model = TCN(**model_param)
     print(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
 
-    criterion = LogSpaceHuberLoss(
-        delta=cfg['loss']['delta'], alpha=cfg['loss']['alpha'])
+    loss_cfg  = cfg['loss']
+    loss_type = loss_cfg.get('type', 'huber')
+    if loss_type == 'berhu':
+        criterion = BerhuLoss(delta=loss_cfg['delta'])
+    else:
+        criterion = LogSpaceHuberLoss(
+            delta=loss_cfg['delta'], alpha=loss_cfg['alpha'])
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

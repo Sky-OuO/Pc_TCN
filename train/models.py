@@ -94,22 +94,23 @@ class CrossAttentionUncertaintyEncoder(nn.Module):
         )
 
     def forward(self, unc1, unc2):
-        # unc1, unc2: (batch, input_dim)
-        emb1 = self.pre_encoder(unc1).unsqueeze(1)  # (batch, 1, d_model)
-        emb2 = self.pre_encoder(unc2).unsqueeze(1)  # (batch, 1, d_model)
+        # unc1, unc2: (batch, seq_len, input_dim) — pass full time sequence
+        emb1 = self.pre_encoder(unc1)  # (batch, seq_len, d_model)
+        emb2 = self.pre_encoder(unc2)
 
-        # obj1 attends to obj2 (Q=emb1, K=emb2, V=emb2)
+        # obj1 attends to obj2 across time (Q=emb1, K=emb2, V=emb2)
         attn_out, _ = self.attn_1to2(emb1, emb2, emb2)
         ctx1 = self.norm1_a(emb1 + attn_out)
         ctx1 = self.norm2_a(ctx1 + self.ffn_a(ctx1))
 
-        # obj2 attends to obj1 (Q=emb2, K=emb1, V=emb1)
+        # obj2 attends to obj1 across time (Q=emb2, K=emb1, V=emb1)
         attn_out, _ = self.attn_2to1(emb2, emb1, emb1)
         ctx2 = self.norm1_b(emb2 + attn_out)
         ctx2 = self.norm2_b(ctx2 + self.ffn_b(ctx2))
 
-        ctx1 = ctx1.squeeze(1)  # (batch, d_model)
-        ctx2 = ctx2.squeeze(1)
+        # Pool over time dimension → (batch, d_model)
+        ctx1 = ctx1.mean(dim=1)
+        ctx2 = ctx2.mean(dim=1)
         return self.fusion(torch.cat([ctx1, ctx2], dim=1))  # (batch, output_dim)
 
 
@@ -314,9 +315,9 @@ class TCN(nn.Module):
 
     def extract_features(self, x):
         """Return fusion features before the regression head."""
-        x_geo  = x[:, :, :-self.unc_feature_dim]
-        x_unc1 = x[:, -1, -self.unc_feature_dim:-9]
-        x_unc2 = x[:, -1, -9:]
+        x_geo  = x[:, :, :-self.unc_feature_dim]          # (batch, seq_len, geo_dim)
+        x_unc1 = x[:, :, -self.unc_feature_dim:-9]        # (batch, seq_len, 9) — full sequence
+        x_unc2 = x[:, :, -9:]                              # (batch, seq_len, 9)
         x_geo   = x_geo.transpose(1, 2)
         out_geo = self.network(x_geo)
         out_geo = self.temporal_pool(out_geo)

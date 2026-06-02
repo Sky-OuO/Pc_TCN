@@ -12,7 +12,8 @@
         "dropout": 0.2
     },
     "loss": {
-        "delta": 0.3,
+        "type": "berhu",
+        "delta": 3.67,
         "alpha": 1.5
     },
     "training": {
@@ -47,7 +48,7 @@
         "threshold_b_years": 7.0
     },
     "fds": {
-        "enabled": true,
+        "enabled": false,
         "bucket_num": 100,
         "ks": 5,
         "sigma": 2,
@@ -59,6 +60,6 @@
         "num_bins": 100,
         "kernel": "gaussian",
         "ks": 5,
-        "sigma": 2
+        "sigma": 4
     }
 }

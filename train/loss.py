@@ -18,3 +18,19 @@ class LogSpaceHuberLoss(nn.Module):
         if reduction == 'none':
             return loss.squeeze(-1)
         return loss.mean()
+
+
+class BerhuLoss(nn.Module):
+    def __init__(self, delta=1.0):
+        super().__init__()
+        self.delta = delta
+
+    def forward(self, log_predictions, log_targets, reduction='mean'):
+        diff     = log_predictions - log_targets
+        abs_diff = torch.abs(diff)
+        linear    = abs_diff
+        quadratic = (diff ** 2 + self.delta ** 2) / (2.0 * self.delta)
+        loss = torch.where(abs_diff <= self.delta, linear, quadratic)
+        if reduction == 'none':
+            return loss.squeeze(-1)
+        return loss.mean()

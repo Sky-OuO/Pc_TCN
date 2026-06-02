@@ -52,7 +52,7 @@ def compute_global_metrics(log_preds, log_gts):
     }
 
 
-def compute_breakdown(log_preds, log_gts):
+def compute_breakdown(log_preds, log_gts, global_sigma):
     signed  = log_preds - log_gts
     errors  = np.abs(signed)
     decades = [(-10, -8), (-8, -6), (-6, -5), (-5, -4), (-4, -3), (-3, -2), (-2, 0)]
@@ -67,8 +67,8 @@ def compute_breakdown(log_preds, log_gts):
                 'count':         count,
                 'bias':          float(np.mean(signed[mask])),
                 'sigma':         d_sigma,
-                'within_1sigma': float(np.mean(errors[mask] < d_sigma) * 100.0),
-                'within_2sigma': float(np.mean(errors[mask] < 2 * d_sigma) * 100.0),
+                'within_1sigma': float(np.mean(errors[mask] < global_sigma) * 100.0),
+                'within_2sigma': float(np.mean(errors[mask] < 2 * global_sigma) * 100.0),
             }
         else:
             row = {
@@ -198,9 +198,9 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows):
             cell.set_facecolor('#f7f7f7')
 
     plt.tight_layout()
-    plt.savefig('logs/prediction_scatter.png', dpi=150)
+    plt.savefig('figures/prediction_scatter.png', dpi=150)
     plt.close()
-    print(f"\nPlots saved to 'logs/prediction_scatter.png'")
+    print(f"\nPlots saved to 'figures/prediction_scatter.png'")
 
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cpu', log_path=f'logs/eval_results_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log'):
@@ -211,7 +211,7 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cpu', log
     log_preds                  = np.log10(np.maximum(all_preds, eps))
     log_gts                    = np.log10(np.maximum(all_gts,   eps))
     metrics                    = compute_global_metrics(log_preds, log_gts)
-    breakdown_rows             = compute_breakdown(log_preds, log_gts)
+    breakdown_rows             = compute_breakdown(log_preds, log_gts, metrics['sigma'])
 
     class _Tee:
         def __init__(self, stream, fh):
