@@ -23,6 +23,7 @@ class DataCollectionPipeline:
         
         self._min_request_interval = 14.0
         self._last_request_time = 0.0
+        self._ban_until = 0.0          # epoch time until which we are banned (403)
         
         # Data storage
         self.all_data = []  
@@ -38,25 +39,42 @@ class DataCollectionPipeline:
             time.sleep(wait)
         self._last_request_time = time.time()
 
-    def _get_with_retry(self, url, max_403_retries=3):
-        """GET with automatic 2-hour sleep on 403 Forbidden."""
-        for attempt in range(max_403_retries):
-            try:
+    def _wait_if_banned(self):
+        remaining = self._ban_until - time.time()
+        if remaining > 0:
+            print(f"  [Ban active] Waiting {remaining / 3600:.2f}h for ban to expire...")
+            time.sleep(remaining)
+
+    def _handle_403(self):
+        now = time.time()
+        if now < self._ban_until:
+            # Already slept for this ban window — skip immediately
+            print("  [403 Forbidden] Still within ban window, skipping request.")
+            return False
+        # New ban: sleep 2 hours once
+        self._ban_until = now + 7200
+        print(f"  [403 Forbidden] CelesTrak ban detected. Sleeping 2h...")
+        time.sleep(7200)
+        return True
+
+    def _get_with_retry(self, url):
+        self._wait_if_banned()
+        try:
+            resp = requests.get(url, timeout=30)
+            if resp.status_code == 403:
+                retried = self._handle_403()
+                if not retried:
+                    return None
+                # Retry once after sleeping
                 resp = requests.get(url, timeout=30)
                 if resp.status_code == 403:
-                    wait = 7200
-                    print(f"\n  [403 Forbidden] CelesTrak rejected request. "
-                          f"Sleeping {wait // 3600}h before retry "
-                          f"({attempt + 1}/{max_403_retries})...")
-                    time.sleep(wait)
-                    continue
-                resp.raise_for_status()
-                return resp
-            except requests.exceptions.RequestException as e:
-                print(f"  Request error: {e}")
-                return None
-        print(f"  [403] Max retries reached, skipping: {url}")
-        return None
+                    print(f"  [403] Still forbidden after sleep, skipping: {url}")
+                    return None
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.RequestException as e:
+            print(f"  Request error: {e}")
+            return None
 
     def get_bin_for_probability(self, pc):
         pc = float(pc)
@@ -282,13 +300,14 @@ class DataCollectionPipeline:
             try:  
                 if enable_rate_limit_wait:
                     self._rate_limit_wait()
+                self._wait_if_banned()
                 resp = requests.get(url, timeout=15)
 
                 if resp.status_code == 403:
-                    wait_time = 7200
-                    print(f"  [403 Forbidden] Sleeping {wait_time // 3600}h "
-                          f"(attempt {attempt+1}/{max_retries})...")
-                    time.sleep(wait_time)
+                    retried = self._handle_403()
+                    if not retried:
+                        self.tle_cache[norad_id] = None
+                        return None
                     continue
 
                 resp.raise_for_status()
