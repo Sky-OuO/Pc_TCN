@@ -6,6 +6,12 @@ import json
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import glob
+import os
+
+if not os.path.exists("params"):
+    os.makedirs("params", exist_ok=True)
+if not os.path.exists("figures"):
+    os.makedirs("figures", exist_ok=True)
 
 def _parse_launch_year(intldesg):
     try:
