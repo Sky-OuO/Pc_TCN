@@ -13,7 +13,7 @@
     },
     "loss": {
         "type": "berhu",
-        "delta": 3.67,
+        "delta": 1.0,
         "alpha": 1.5
     },
     "training": {
@@ -60,6 +60,6 @@
         "num_bins": 100,
         "kernel": "gaussian",
         "ks": 5,
-        "sigma": 4
+        "sigma": 2
     }
 }
