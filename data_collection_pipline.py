@@ -20,7 +20,12 @@ class DataCollectionPipeline:
         self.min_samples_per_bin = config.get('min_samples_per_bin', 50)
         self.max_iterations = config.get('max_iterations', 10)
         self.max_results_per_query = config.get('max_results_per_query', 100)
-        
+
+        tle_filter = config.get('tle_filter', {})
+        self.tle_filter_enabled = tle_filter.get('enabled', False)
+        self.tle_filter_pc_low  = float(tle_filter.get('pc_low',  1e-6))
+        self.tle_filter_pc_high = float(tle_filter.get('pc_high', 1e-4))
+
         self._min_request_interval = 14.0
         self._last_request_time = 0.0
         self._ban_until = 0.0          # epoch time until which we are banned (403)
@@ -344,10 +349,22 @@ class DataCollectionPipeline:
 
     def fetch_all_tles(self):
         sat_ids = set()
+        skipped_events = 0
         for item in self.all_data:
+            if self.tle_filter_enabled:
+                try:
+                    pc_val = float(item.get('Pc_gt', 0) or 0)
+                except (ValueError, TypeError):
+                    pc_val = 0.0
+                if not (pc_val < self.tle_filter_pc_low or pc_val > self.tle_filter_pc_high):
+                    skipped_events += 1
+                    continue
             sat_ids.add(str(item.get('norad_id_1', '')).strip())
             sat_ids.add(str(item.get('norad_id_2', '')).strip())
         sat_ids.discard('')
+        if self.tle_filter_enabled and skipped_events:
+            print(f"  [TLE filter] Skipped {skipped_events} events with "
+                  f"Pc in [{self.tle_filter_pc_low:.0e}, {self.tle_filter_pc_high:.0e}]")
 
         to_fetch = [sid for sid in sat_ids if sid not in self.tle_cache]
         print(f"\nFetching TLE data for {len(to_fetch)} satellites "
@@ -366,8 +383,19 @@ class DataCollectionPipeline:
     def format_output(self):
         output = []
         skipped = 0
+        filtered_by_pc = 0
 
         for item in self.all_data:
+            # Apply Pc range filter before any TLE lookup
+            if self.tle_filter_enabled:
+                try:
+                    pc_val = float(item.get('Pc_gt', 0) or 0)
+                except (ValueError, TypeError):
+                    pc_val = 0.0
+                if not (pc_val < self.tle_filter_pc_low or pc_val > self.tle_filter_pc_high):
+                    filtered_by_pc += 1
+                    continue
+
             norad_1 = str(item.get('norad_id_1', '')).strip()
             norad_2 = str(item.get('norad_id_2', '')).strip()
             tle_1 = self.tle_cache.get(norad_1)
@@ -391,6 +419,9 @@ class DataCollectionPipeline:
                 "sat_2": tle_2
             })
 
+        if filtered_by_pc:
+            print(f"  [TLE filter] Removed {filtered_by_pc} events with "
+                  f"Pc in [{self.tle_filter_pc_low:.0e}, {self.tle_filter_pc_high:.0e}]")
         if skipped:
             print(f"  Skipped {skipped} events due to missing TLE data")
         print(f"  Final output: {len(output)} events with TLE data")
@@ -494,6 +525,10 @@ class DataCollectionPipeline:
         return formatted
 
 if __name__ == "__main__":
+    with open('config.json') as _f:
+        _global_cfg = json.load(_f)
+    _dc_cfg = _global_cfg.get('data_collection', {})
+
     config = {
         'prob_bins': [
             (1e-10, 1e-8),
@@ -506,7 +541,8 @@ if __name__ == "__main__":
         ],
         'min_samples_per_bin': 30,  
         'max_iterations': 8,
-        'max_results_per_query': 100
+        'max_results_per_query': 100,
+        'tle_filter': _dc_cfg.get('tle_filter', {}),
     }
     
     collector = DataCollectionPipeline(config)

@@ -61,5 +61,12 @@
         "kernel": "gaussian",
         "ks": 5,
         "sigma": 2
+    },
+    "data_collection": {
+        "tle_filter": {
+            "enabled": true,
+            "pc_low": 1e-6,
+            "pc_high": 1e-4
+        }
     }
 }
