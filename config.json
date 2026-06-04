@@ -36,7 +36,7 @@
         "milestone": 10
     },
     "sampler": {
-        "bin_edges": [-10, -8, -7, -6, -5, -4.5, -4, -3.5, -3, -2, -1, 0]
+        "bin_edges": [-10, -8, -6, -5, -4, -3, -2, -1, 0]
     },
     "uncertainty_encoder": {
         "d_model": 32,
@@ -48,13 +48,14 @@
         "threshold_b_years": 7.0
     },
     "fds": {
-        "enabled": false,
+        "enabled": true,
         "bucket_num": 100,
         "ks": 5,
         "sigma": 2,
         "momentum": 0.9,
         "start_update": 30,
-        "start_smooth": 31
+        "start_smooth": 40,
+        "residual_alpha": 0.2
     },
     "lds": {
         "num_bins": 100,

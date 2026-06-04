@@ -162,15 +162,17 @@ def get_lds_kernel_window(kernel='gaussian', ks=5, sigma=2):
 
 class FDS(nn.Module):
     def __init__(self, feature_dim, bucket_num=100, bucket_start=0,
-                 start_update=0, start_smooth=1, kernel='gaussian', ks=5, sigma=2, momentum=0.9):
+                 start_update=0, start_smooth=1, kernel='gaussian', ks=5, sigma=2, momentum=0.9,
+                 residual_alpha=0.0):
         super().__init__()
-        self.feature_dim  = feature_dim
-        self.bucket_num   = bucket_num
-        self.bucket_start = bucket_start
-        self.half_ks      = (ks - 1) // 2
-        self.momentum     = momentum
-        self.start_update = start_update
-        self.start_smooth = start_smooth
+        self.feature_dim    = feature_dim
+        self.bucket_num     = bucket_num
+        self.bucket_start   = bucket_start
+        self.half_ks        = (ks - 1) // 2
+        self.momentum       = momentum
+        self.start_update   = start_update
+        self.start_smooth   = start_smooth
+        self.residual_alpha = residual_alpha  # 0 = pure smoothing, 1 = no smoothing
 
         kw = torch.tensor(get_lds_kernel_window(kernel, ks, sigma), dtype=torch.float32)
         self.register_buffer('kernel_window', kw)
@@ -195,8 +197,12 @@ class FDS(nn.Module):
     def _update_last_epoch_stats(self):
         self.running_mean_last_epoch  = self.running_mean.clone()
         self.running_var_last_epoch   = self.running_var.clone()
-        self.smoothed_mean_last_epoch = self._smooth_1d(self.running_mean_last_epoch)
-        self.smoothed_var_last_epoch  = self._smooth_1d(self.running_var_last_epoch)
+        # Residual smoothing: μ_target = (1-α)*μ_smoothed + α*μ_raw
+        pure_smoothed_mean = self._smooth_1d(self.running_mean_last_epoch)
+        pure_smoothed_var  = self._smooth_1d(self.running_var_last_epoch)
+        a = self.residual_alpha
+        self.smoothed_mean_last_epoch = (1 - a) * pure_smoothed_mean + a * self.running_mean_last_epoch
+        self.smoothed_var_last_epoch  = (1 - a) * pure_smoothed_var  + a * self.running_var_last_epoch
 
     def update_last_epoch_stats(self, epoch):
         self._update_last_epoch_stats()
@@ -256,7 +262,8 @@ class TCN(nn.Module):
     def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.3,
                  unc_d_model=32, unc_num_heads=4, unc_dropout=0.1,
                  fds=False, fds_bucket_num=100, fds_ks=5, fds_sigma=2,
-                 fds_momentum=0.9, fds_start_update=0, fds_start_smooth=1):
+                 fds_momentum=0.9, fds_start_update=0, fds_start_smooth=1,
+                 fds_residual_alpha=0.0):
         super(TCN, self).__init__()
         
         self.unc_feature_dim = 18   # 9-dim per object x 2 objects
@@ -311,6 +318,7 @@ class TCN(nn.Module):
                 ks=fds_ks,
                 sigma=fds_sigma,
                 momentum=fds_momentum,
+                residual_alpha=fds_residual_alpha,
             )
 
     def extract_features(self, x):

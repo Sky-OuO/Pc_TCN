@@ -42,6 +42,7 @@ if __name__ == "__main__":
         'fds_momentum':     fds_cfg.get('momentum', 0.9),
         'fds_start_update': fds_cfg.get('start_update', 0),
         'fds_start_smooth': fds_cfg.get('start_smooth', 1),
+        'fds_residual_alpha': fds_cfg.get('residual_alpha', 0.0),
     }
 
     lds_cfg       = cfg.get('lds', {})
