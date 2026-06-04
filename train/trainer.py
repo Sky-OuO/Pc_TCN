@@ -95,7 +95,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
                                       log_target_min=log_target_min, log_target_max=log_target_max)
 
-        if getattr(model, 'use_fds', False):
+        if getattr(model, 'use_fds', False) and epoch >= model.FDS.start_update:
             all_feats, all_bins = _collect_features(model, train_loader.dataset, device)
             model.FDS.update_last_epoch_stats(epoch)
             model.FDS.update_running_stats(all_feats.to(device), all_bins.to(device), epoch)
