@@ -50,12 +50,11 @@
     "fds": {
         "enabled": true,
         "bucket_num": 100,
-        "ks": 5,
-        "sigma": 2,
+        "ks": 3,
+        "sigma": 1,
         "momentum": 0.9,
         "start_update": 30,
-        "start_smooth": 40,
-        "residual_alpha": 0.2
+        "start_smooth": 50
     },
     "lds": {
         "num_bins": 100,
@@ -63,11 +62,22 @@
         "ks": 5,
         "sigma": 2
     },
+    "regression_head": {
+        "dims": [256, 128, 64]
+    },
+    "decoupled_training": {
+        "enabled": true,
+        "stage2_epochs": 150,
+        "stage2_lr": 1e-4,
+        "stage2_patience": 60,
+        "fds_start_update": 0,
+        "fds_start_smooth": 10
+    },
     "data_collection": {
         "tle_filter": {
             "enabled": true,
             "pc_low": 1e-6,
-            "pc_high": 1e-4
+            "pc_high": 1e-3
         }
     }
 }

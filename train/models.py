@@ -162,8 +162,7 @@ def get_lds_kernel_window(kernel='gaussian', ks=5, sigma=2):
 
 class FDS(nn.Module):
     def __init__(self, feature_dim, bucket_num=100, bucket_start=0,
-                 start_update=0, start_smooth=1, kernel='gaussian', ks=5, sigma=2, momentum=0.9,
-                 residual_alpha=0.0):
+                 start_update=0, start_smooth=1, kernel='gaussian', ks=5, sigma=2, momentum=0.9):
         super().__init__()
         self.feature_dim    = feature_dim
         self.bucket_num     = bucket_num
@@ -172,7 +171,6 @@ class FDS(nn.Module):
         self.momentum       = momentum
         self.start_update   = start_update
         self.start_smooth   = start_smooth
-        self.residual_alpha = residual_alpha  # 0 = pure smoothing, 1 = no smoothing
 
         kw = torch.tensor(get_lds_kernel_window(kernel, ks, sigma), dtype=torch.float32)
         self.register_buffer('kernel_window', kw)
@@ -197,16 +195,23 @@ class FDS(nn.Module):
     def _update_last_epoch_stats(self):
         self.running_mean_last_epoch  = self.running_mean.clone()
         self.running_var_last_epoch   = self.running_var.clone()
-        # Residual smoothing: μ_target = (1-α)*μ_smoothed + α*μ_raw
-        pure_smoothed_mean = self._smooth_1d(self.running_mean_last_epoch)
-        pure_smoothed_var  = self._smooth_1d(self.running_var_last_epoch)
-        a = self.residual_alpha
-        self.smoothed_mean_last_epoch = (1 - a) * pure_smoothed_mean + a * self.running_mean_last_epoch
-        self.smoothed_var_last_epoch  = (1 - a) * pure_smoothed_var  + a * self.running_var_last_epoch
+        self.smoothed_mean_last_epoch = self._smooth_1d(self.running_mean_last_epoch)
+        self.smoothed_var_last_epoch  = self._smooth_1d(self.running_var_last_epoch)
 
     def update_last_epoch_stats(self, epoch):
         self._update_last_epoch_stats()
         print(f"FDS: updated smoothed statistics at epoch {epoch}")
+
+    def reset_running_stats(self):
+        """Reset all statistics buffers for a clean Stage 2 start."""
+        self.running_mean.zero_()
+        self.running_var.fill_(1.0)
+        self.running_mean_last_epoch.zero_()
+        self.running_var_last_epoch.fill_(1.0)
+        self.smoothed_mean_last_epoch.zero_()
+        self.smoothed_var_last_epoch.fill_(1.0)
+        self.num_samples_tracked.zero_()
+        print("FDS: running stats reset for Stage 2.")
 
     def update_running_stats(self, features, labels, epoch):
         assert self.feature_dim == features.size(1)
@@ -234,7 +239,6 @@ class FDS(nn.Module):
         print(f"FDS: updated running stats at epoch {epoch}")
 
     def smooth(self, features, labels, epoch):
-        """Calibrate batch features using smoothed per-bin statistics."""
         if epoch < self.start_smooth:
             return features
         for label in torch.unique(labels):
@@ -263,7 +267,7 @@ class TCN(nn.Module):
                  unc_d_model=32, unc_num_heads=4, unc_dropout=0.1,
                  fds=False, fds_bucket_num=100, fds_ks=5, fds_sigma=2,
                  fds_momentum=0.9, fds_start_update=0, fds_start_smooth=1,
-                 fds_residual_alpha=0.0):
+                 head_dims=None):
         super(TCN, self).__init__()
         
         self.unc_feature_dim = 18   # 9-dim per object x 2 objects
@@ -292,18 +296,17 @@ class TCN(nn.Module):
             dropout=unc_dropout,
         )
         self.film = FiLM(num_channels[-1])
-        
-        self.regression_head = nn.Sequential(
-            nn.Linear(num_channels[-1], 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 1)
-        )
+
+        #regression head
+        _head_dims = head_dims if head_dims is not None else [128, 64]
+        head_layers = []
+        prev = num_channels[-1]
+        _dropouts = [0.3] + [0.2] * (len(_head_dims) - 1)
+        for dim, drop in zip(_head_dims, _dropouts):
+            head_layers += [nn.Linear(prev, dim), nn.BatchNorm1d(dim), nn.ReLU(), nn.Dropout(drop)]
+            prev = dim
+        head_layers.append(nn.Linear(prev, 1))
+        self.regression_head = nn.Sequential(*head_layers)
         
         with torch.no_grad():
             self.regression_head[-1].bias.fill_(-5.0)
@@ -318,11 +321,9 @@ class TCN(nn.Module):
                 ks=fds_ks,
                 sigma=fds_sigma,
                 momentum=fds_momentum,
-                residual_alpha=fds_residual_alpha,
             )
 
     def extract_features(self, x):
-        """Return fusion features before the regression head."""
         x_geo  = x[:, :, :-self.unc_feature_dim]          # (batch, seq_len, geo_dim)
         x_unc1 = x[:, :, -self.unc_feature_dim:-9]        # (batch, seq_len, 9) — full sequence
         x_unc2 = x[:, :, -9:]                              # (batch, seq_len, 9)
@@ -331,6 +332,17 @@ class TCN(nn.Module):
         out_geo = self.temporal_pool(out_geo)
         fusion_unc = self.uncertainty_encoder(x_unc1, x_unc2)
         return self.film(out_geo, fusion_unc)   # (batch, channels)
+
+    def freeze_backbone(self):
+        for module in [self.network, self.temporal_pool, self.uncertainty_encoder, self.film]:
+            for param in module.parameters():
+                param.requires_grad = False
+        print("Backbone frozen for Stage 2 decoupled training.")
+
+    def unfreeze_all(self):
+        for param in self.parameters():
+            param.requires_grad = True
+        print("All parameters unfrozen.")
 
     def forward(self, x, labels=None, epoch=0):
         # x: (batch, seq_len, total_features)

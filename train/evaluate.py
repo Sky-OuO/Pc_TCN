@@ -198,12 +198,12 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows):
             cell.set_facecolor('#f7f7f7')
 
     plt.tight_layout()
-    plt.savefig('figures/prediction_scatter.png', dpi=150)
+    plt.savefig(f'figures/prediction_scatter_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.png', dpi=200)
     plt.close()
-    print(f"\nPlots saved to 'figures/prediction_scatter.png'")
+    print("Evaluation plots saved to 'figures/' directory")
 
 
-def evaluate_best_model(model_param, val_features, val_labels, device='cpu',
+def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
                         seq_length=601, log_path=None):
     if log_path is None:
         log_path = f'logs/eval_results_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log'

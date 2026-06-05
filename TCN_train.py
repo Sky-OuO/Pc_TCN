@@ -6,7 +6,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, Sequ
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
 from train.loss import LogSpaceHuberLoss, BerhuLoss
-from train.trainer import train_model
+from train.trainer import train_model, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
 
@@ -27,6 +27,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     fds_cfg = cfg.get('fds', {})
+    head_cfg = cfg.get('regression_head', {})
     model_param = {
         'input_size':       train_features.shape[2],
         'num_channels':     cfg['model']['num_channels'],
@@ -42,7 +43,7 @@ if __name__ == "__main__":
         'fds_momentum':     fds_cfg.get('momentum', 0.9),
         'fds_start_update': fds_cfg.get('start_update', 0),
         'fds_start_smooth': fds_cfg.get('start_smooth', 1),
-        'fds_residual_alpha': fds_cfg.get('residual_alpha', 0.0),
+        'head_dims':        head_cfg.get('dims', None),
     }
 
     lds_cfg       = cfg.get('lds', {})
@@ -76,8 +77,14 @@ if __name__ == "__main__":
     model = TCN(**model_param)
     print(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
 
+    #stage1 training with optional FDS disabled
+    dt_cfg = cfg.get('decoupled_training', {})
+    if dt_cfg.get('enabled', False):
+        model.use_fds = False
+        print("[Stage 1] FDS disabled — backbone will train on raw features.")
+
     loss_cfg  = cfg['loss']
-    loss_type = loss_cfg.get('type', 'huber')
+    loss_type = loss_cfg.get('type', 'berhu')
     if loss_type == 'berhu':
         criterion = BerhuLoss(delta=loss_cfg['delta'])
     else:
@@ -113,5 +120,25 @@ if __name__ == "__main__":
         log_target_min=cfg['training']['log_target_min'],
         log_target_max=cfg['training']['log_target_max'],
     )
+
+    if dt_cfg.get('enabled', False):
+        print("\n" + "="*60)
+        print("Starting Stage 2: decoupled head training with FDS")
+        print("="*60)
+        # Load the best Stage 1 backbone weights before Stage 2
+        model.load_state_dict(torch.load('params/best_model.pth',
+                                          map_location=device, weights_only=True))
+        model.use_fds = True
+        train_stage2(
+            model, train_loader, val_loader, criterion, device,
+            stage2_epochs=dt_cfg.get('stage2_epochs', 100),
+            stage2_lr=dt_cfg.get('stage2_lr', 1e-4),
+            stage2_patience=dt_cfg.get('stage2_patience', 30),
+            fds_start_update=dt_cfg.get('fds_start_update', 0),
+            fds_start_smooth=dt_cfg.get('fds_start_smooth', 5),
+            log_target_min=cfg['training']['log_target_min'],
+            log_target_max=cfg['training']['log_target_max'],
+        )
+
     evaluate_best_model(model_param, val_features, val_labels, device=device,
                         seq_length=cfg['data']['seq_length'])

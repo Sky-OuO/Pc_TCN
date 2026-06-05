@@ -4,7 +4,6 @@ import time
 import io
 import requests
 from collections import defaultdict
-import os
 
 class DataCollectionPipeline:
     def __init__(self, config):

@@ -32,7 +32,6 @@ def _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
         targets        = torch.clamp(batch_labels, min=eps)
         log_targets    = torch.clamp(torch.log10(targets), min=log_target_min, max=log_target_max)
 
-        # Integer bin labels for FDS: log10(Pc) in [-10,0] -> bin in [0,99]
         bin_labels = torch.clamp(((log_targets + 10.0) * 10).long(), 0, 99).squeeze(1)
 
         optimizer.zero_grad()
@@ -70,7 +69,7 @@ def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10,
     return val_loss, log_mae
 
 
-def plot_loss_curve(train_losses, val_losses):
+def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png'):
     fig, ax = plt.subplots(figsize=(14, 5))
     ax.plot(train_losses, label='Training Loss')
     ax.plot(val_losses,   label='Validation Loss')
@@ -79,7 +78,7 @@ def plot_loss_curve(train_losses, val_losses):
     ax.legend()
     ax.set_title('Training and Validation Loss')
     plt.tight_layout()
-    plt.savefig('figures/loss_curve.png', dpi=200)
+    plt.savefig(filename, dpi=200)
     plt.close()
 
 
@@ -129,5 +128,69 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             print(f"Early stop at epoch {epoch+1}")
             break
 
-    plot_loss_curve(train_losses, val_losses)
+    plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve_stage1.png')
+    return model
+
+# Stage 2: Decoupled head training with FDS enabled
+def train_stage2(model, train_loader, val_loader, criterion, device,
+                 stage2_epochs=100, stage2_lr=1e-4, stage2_patience=30,
+                 fds_start_update=0, fds_start_smooth=5,
+                 log_target_min=-9.0, log_target_max=-0.3):
+    model.to(device)
+    model.freeze_backbone()
+
+    if getattr(model, 'use_fds', False):
+        model.FDS.reset_running_stats()
+        model.FDS.start_update = fds_start_update
+        model.FDS.start_smooth = fds_start_smooth
+
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=stage2_lr, weight_decay=1e-4,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=stage2_epochs, eta_min=1e-6)
+
+    best_val_loss    = float('inf')
+    patience_counter = 0
+    train_losses, val_losses = [], []
+
+    for epoch in range(stage2_epochs):
+        train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
+                                      log_target_min=log_target_min, log_target_max=log_target_max)
+
+        if getattr(model, 'use_fds', False) and epoch >= model.FDS.start_update:
+            all_feats, all_bins = _collect_features(model, train_loader.dataset, device)
+            model.FDS.update_last_epoch_stats(epoch)
+            model.FDS.update_running_stats(all_feats.to(device), all_bins.to(device), epoch)
+            model.train()
+
+        val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device,
+                                                 log_target_min=log_target_min,
+                                                 log_target_max=log_target_max)
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        torch.save(model.state_dict(), 'params/last_model.pth')
+        scheduler.step()
+
+        if val_loss < best_val_loss:
+            best_val_loss    = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), 'params/best_model.pth')
+        else:
+            patience_counter += 1
+
+        if (epoch + 1) % 10 == 0:
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'[Stage2] Epoch [{epoch+1}/{stage2_epochs}] lr={current_lr:.2e}')
+            print(f'Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, '
+                  f'Val Log10-MAE: {log_mae:.4f} orders')
+            print('-' * 50)
+
+        if patience_counter >= stage2_patience:
+            print(f"[Stage2] Early stop at epoch {epoch+1}")
+            break
+
+    plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve_stage2.png')
     return model
