@@ -3,4 +3,4 @@ params/
 figures/
 __pycache__/
 .vscode/
-mypbs.txt/
+mypbs_sub.txt
