@@ -50,25 +50,29 @@ class TCNBlock(nn.Module):
 
 
 class TemporalAttentionPooling(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, max_seq_len=601):
         super().__init__()
         self.attention = nn.Sequential(
             nn.Linear(channels, channels // 4),
             nn.Tanh(),
             nn.Linear(channels // 4, 1)
         )
+        # Learnable per-position bias: position 0 = furthest from TCA, last = TCA
+        self.pos_bias = nn.Parameter(torch.zeros(max_seq_len, 1))
     
     def forward(self, x):
         # x: (batch, channels, seq_len)
         x_t = x.transpose(1, 2)  # (batch, seq_len, channels)
+        seq_len = x_t.size(1)
         attn_weights = self.attention(x_t)  # (batch, seq_len, 1)
+        attn_weights = attn_weights + self.pos_bias[:seq_len]  # time-to-TCA positional bias
         attn_weights = F.softmax(attn_weights, dim=1)
         out = (x_t * attn_weights).sum(dim=1)  # (batch, channels)
         return out
 
 
 class CrossAttentionUncertaintyEncoder(nn.Module):
-    def __init__(self, input_dim=9, d_model=32, num_heads=4, output_dim=128, dropout=0.1):
+    def __init__(self, input_dim=9, d_model=32, num_heads=4, output_dim=128, dropout=0.1, num_layers=2):
         super().__init__()
         self.pre_encoder = nn.Sequential(
             nn.Linear(input_dim, d_model),
@@ -76,16 +80,28 @@ class CrossAttentionUncertaintyEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, d_model),
         )
-        self.attn_1to2 = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.attn_2to1 = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.norm1_a   = nn.LayerNorm(d_model)
-        self.norm1_b   = nn.LayerNorm(d_model)
-        self.ffn_a = nn.Sequential(
-            nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
-        self.ffn_b = nn.Sequential(
-            nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
-        self.norm2_a = nn.LayerNorm(d_model)
-        self.norm2_b = nn.LayerNorm(d_model)
+        # Stacked cross-attention layers
+        self.attn_layers_1to2 = nn.ModuleList([
+            nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
+        self.attn_layers_2to1 = nn.ModuleList([
+            nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
+        self.norms_a = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(2 * num_layers)])
+        self.norms_b = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(2 * num_layers)])
+        self.ffns_a = nn.ModuleList([
+            nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
+            for _ in range(num_layers)
+        ])
+        self.ffns_b = nn.ModuleList([
+            nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
+            for _ in range(num_layers)
+        ])
+        # Time-aware pooling instead of naive mean
+        self.pool_a = TemporalAttentionPooling(d_model)
+        self.pool_b = TemporalAttentionPooling(d_model)
         self.fusion = nn.Sequential(
             nn.Linear(2 * d_model, d_model),
             nn.LayerNorm(d_model),
@@ -94,39 +110,46 @@ class CrossAttentionUncertaintyEncoder(nn.Module):
         )
 
     def forward(self, unc1, unc2):
-        # unc1, unc2: (batch, seq_len, input_dim) — pass full time sequence
-        emb1 = self.pre_encoder(unc1)  # (batch, seq_len, d_model)
-        emb2 = self.pre_encoder(unc2)
+        # unc1, unc2: (batch, seq_len, input_dim)
+        ctx1 = self.pre_encoder(unc1)  # (batch, seq_len, d_model)
+        ctx2 = self.pre_encoder(unc2)
 
-        # obj1 attends to obj2 across time (Q=emb1, K=emb2, V=emb2)
-        attn_out, _ = self.attn_1to2(emb1, emb2, emb2)
-        ctx1 = self.norm1_a(emb1 + attn_out)
-        ctx1 = self.norm2_a(ctx1 + self.ffn_a(ctx1))
+        for i, (attn_1to2, attn_2to1, ffn_a, ffn_b) in enumerate(
+                zip(self.attn_layers_1to2, self.attn_layers_2to1, self.ffns_a, self.ffns_b)):
+            # obj1 attends to obj2
+            attn_out, _ = attn_1to2(ctx1, ctx2, ctx2)
+            ctx1 = self.norms_a[2 * i](ctx1 + attn_out)
+            ctx1 = self.norms_a[2 * i + 1](ctx1 + ffn_a(ctx1))
+            # obj2 attends to obj1
+            attn_out, _ = attn_2to1(ctx2, ctx1, ctx1)
+            ctx2 = self.norms_b[2 * i](ctx2 + attn_out)
+            ctx2 = self.norms_b[2 * i + 1](ctx2 + ffn_b(ctx2))
 
-        # obj2 attends to obj1 across time (Q=emb2, K=emb1, V=emb1)
-        attn_out, _ = self.attn_2to1(emb2, emb1, emb1)
-        ctx2 = self.norm1_b(emb2 + attn_out)
-        ctx2 = self.norm2_b(ctx2 + self.ffn_b(ctx2))
-
-        # Pool over time dimension → (batch, d_model)
-        ctx1 = ctx1.mean(dim=1)
-        ctx2 = ctx2.mean(dim=1)
-        return self.fusion(torch.cat([ctx1, ctx2], dim=1))  # (batch, output_dim)
+        # TemporalAttentionPooling expects (batch, channels, seq_len)
+        ctx1_pooled = self.pool_a(ctx1.transpose(1, 2))  # (batch, d_model)
+        ctx2_pooled = self.pool_b(ctx2.transpose(1, 2))  # (batch, d_model)
+        return self.fusion(torch.cat([ctx1_pooled, ctx2_pooled], dim=1))  # (batch, output_dim)
 
 
 class FiLM(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, geo_dim, unc_dim=None):
         super().__init__()
-        self.gamma_layer = nn.Linear(dim, dim)
-        self.beta_layer  = nn.Linear(dim, dim)
+        if unc_dim is None:
+            unc_dim = geo_dim
+        self.gamma_layer = nn.Linear(unc_dim, geo_dim)
+        self.beta_layer  = nn.Linear(unc_dim, geo_dim)
         nn.init.zeros_(self.gamma_layer.weight)
         nn.init.zeros_(self.gamma_layer.bias)
         nn.init.zeros_(self.beta_layer.weight)
         nn.init.zeros_(self.beta_layer.bias)
 
     def forward(self, geo_feat, uncertainty_feat):
-        gamma = 1.0 + self.gamma_layer(uncertainty_feat)
-        beta  = self.beta_layer(uncertainty_feat)
+        gamma = 1.0 + self.gamma_layer(uncertainty_feat)  # (batch, geo_dim)
+        beta  = self.beta_layer(uncertainty_feat)          # (batch, geo_dim)
+        if geo_feat.dim() == 3:
+            # geo_feat: (batch, geo_dim, seq_len) — broadcast over time
+            gamma = gamma.unsqueeze(-1)
+            beta  = beta.unsqueeze(-1)
         return gamma * geo_feat + beta
 
 
@@ -264,56 +287,70 @@ class FDS(nn.Module):
 
 class TCN(nn.Module):
     def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.3,
-                 unc_d_model=32, unc_num_heads=4, unc_dropout=0.1,
+                 unc_d_model=32, unc_num_heads=4, unc_dropout=0.1, unc_num_layers=2,
                  fds=False, fds_bucket_num=100, fds_ks=5, fds_sigma=2,
                  fds_momentum=0.9, fds_start_update=0, fds_start_smooth=1,
                  head_dims=None):
         super(TCN, self).__init__()
-        
+
         self.unc_feature_dim = 18   # 9-dim per object x 2 objects
         self.geo_feature_dim = input_size - self.unc_feature_dim
         self.use_fds         = fds
-        
-        layers = []
+
         num_levels = len(num_channels)
-        layers.append(nn.Conv1d(self.geo_feature_dim, num_channels[0], 1))
-        
-        for i in range(num_levels):
-            dilation_size = 2 ** i
-            in_channels = num_channels[i-1] if i > 0 else num_channels[0]
-            out_channels = num_channels[i]
-            layers.append(TCNBlock(in_channels, out_channels, kernel_size, 
-                                 dilation_size, dropout))
-        
-        self.network = nn.Sequential(*layers)
-        self.temporal_pool = TemporalAttentionPooling(num_channels[-1])
-        
+        split_idx  = num_levels // 2  # split point for multi-scale FiLM
+        out_channels = num_channels[-1]
+        mid_channels = num_channels[split_idx - 1]  # channel dim at the split
+
+        # Stem + early TCN blocks
+        stem = nn.Conv1d(self.geo_feature_dim, num_channels[0], 1)
+        early_blocks = []
+        for i in range(split_idx):
+            in_ch  = num_channels[i - 1] if i > 0 else num_channels[0]
+            out_ch = num_channels[i]
+            early_blocks.append(TCNBlock(in_ch, out_ch, kernel_size, 2 ** i, dropout))
+
+        # Late TCN blocks
+        late_blocks = []
+        for i in range(split_idx, num_levels):
+            in_ch  = num_channels[i - 1]
+            out_ch = num_channels[i]
+            late_blocks.append(TCNBlock(in_ch, out_ch, kernel_size, 2 ** i, dropout))
+
+        self.network_early = nn.Sequential(stem, *early_blocks)
+        self.network_late  = nn.Sequential(*late_blocks)
+        self.temporal_pool = TemporalAttentionPooling(out_channels)
+
         self.uncertainty_encoder = CrossAttentionUncertaintyEncoder(
             input_dim=9,
             d_model=unc_d_model,
             num_heads=unc_num_heads,
-            output_dim=num_channels[-1],
+            output_dim=out_channels,
             dropout=unc_dropout,
+            num_layers=unc_num_layers,
         )
-        self.film = FiLM(num_channels[-1])
+        # Mid-level FiLM: conditions intermediate geo features (seq) on uncertainty
+        self.film_mid = FiLM(geo_dim=mid_channels, unc_dim=out_channels)
+        # Final FiLM: conditions pooled geo features on uncertainty
+        self.film     = FiLM(geo_dim=out_channels,  unc_dim=out_channels)
 
-        #regression head
+        # Regression head — LayerNorm instead of BatchNorm to avoid FDS interference
         _head_dims = head_dims if head_dims is not None else [128, 64]
         head_layers = []
-        prev = num_channels[-1]
+        prev = out_channels
         _dropouts = [0.3] + [0.2] * (len(_head_dims) - 1)
         for dim, drop in zip(_head_dims, _dropouts):
-            head_layers += [nn.Linear(prev, dim), nn.BatchNorm1d(dim), nn.ReLU(), nn.Dropout(drop)]
+            head_layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.ReLU(), nn.Dropout(drop)]
             prev = dim
         head_layers.append(nn.Linear(prev, 1))
         self.regression_head = nn.Sequential(*head_layers)
-        
+
         with torch.no_grad():
             self.regression_head[-1].bias.fill_(-5.0)
 
         if fds:
             self.FDS = FDS(
-                feature_dim=num_channels[-1],
+                feature_dim=out_channels,
                 bucket_num=fds_bucket_num,
                 start_update=fds_start_update,
                 start_smooth=fds_start_smooth,
@@ -324,17 +361,31 @@ class TCN(nn.Module):
             )
 
     def extract_features(self, x):
-        x_geo  = x[:, :, :-self.unc_feature_dim]          # (batch, seq_len, geo_dim)
-        x_unc1 = x[:, :, -self.unc_feature_dim:-9]        # (batch, seq_len, 9) — full sequence
-        x_unc2 = x[:, :, -9:]                              # (batch, seq_len, 9)
-        x_geo   = x_geo.transpose(1, 2)
-        out_geo = self.network(x_geo)
-        out_geo = self.temporal_pool(out_geo)
-        fusion_unc = self.uncertainty_encoder(x_unc1, x_unc2)
-        return self.film(out_geo, fusion_unc)   # (batch, channels)
+        x_geo  = x[:, :, :-self.unc_feature_dim]    # (batch, seq_len, geo_dim)
+        x_unc1 = x[:, :, -self.unc_feature_dim:-9]  # (batch, seq_len, 9)
+        x_unc2 = x[:, :, -9:]                        # (batch, seq_len, 9)
+
+        # Uncertainty encoder runs on full sequence
+        fusion_unc = self.uncertainty_encoder(x_unc1, x_unc2)  # (batch, out_channels)
+
+        # Geo early path
+        x_geo     = x_geo.transpose(1, 2)                       # (batch, geo_dim, seq_len)
+        out_early  = self.network_early(x_geo)                   # (batch, mid_channels, seq_len)
+
+        # Mid-level FiLM: broadcast uncertainty over time dimension
+        out_early  = self.film_mid(out_early, fusion_unc)        # (batch, mid_channels, seq_len)
+
+        # Geo late path + temporal pooling
+        out_late   = self.network_late(out_early)                 # (batch, out_channels, seq_len)
+        out_geo    = self.temporal_pool(out_late)                 # (batch, out_channels)
+
+        # Final FiLM on pooled geo features
+        return self.film(out_geo, fusion_unc)                    # (batch, out_channels)
 
     def freeze_backbone(self):
-        for module in [self.network, self.temporal_pool, self.uncertainty_encoder, self.film]:
+        for module in [self.network_early, self.network_late,
+                       self.temporal_pool, self.uncertainty_encoder,
+                       self.film_mid, self.film]:
             for param in module.parameters():
                 param.requires_grad = False
         print("Backbone frozen for Stage 2 decoupled training.")

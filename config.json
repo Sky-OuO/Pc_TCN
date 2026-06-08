@@ -7,14 +7,16 @@
         "seq_length": 601
     },
     "model": {
-        "num_channels": [32, 32, 64, 64, 64, 128, 128],
-        "kernel_size": 7,
+        "num_channels": [32, 64, 64, 128, 128],
+        "kernel_size": 5,
         "dropout": 0.2
     },
     "loss": {
-        "type": "berhu",
+        "type": "asymmetric_berhu",
         "delta": 1.0,
-        "alpha": 1.5
+        "alpha": 1.5,
+        "high_pc_threshold": -2.0,
+        "alpha_high": 2.5
     },
     "training": {
         "num_epochs": 300,
@@ -41,7 +43,8 @@
     "uncertainty_encoder": {
         "d_model": 32,
         "num_heads": 4,
-        "dropout": 0.1
+        "dropout": 0.1,
+        "num_layers": 2
     },
     "debris_phase": {
         "threshold_a_years": 2.0,
@@ -50,8 +53,8 @@
     "fds": {
         "enabled": true,
         "bucket_num": 100,
-        "ks": 3,
-        "sigma": 1,
+        "ks": 7,
+        "sigma": 2,
         "momentum": 0.9,
         "start_update": 30,
         "start_smooth": 50
@@ -76,7 +79,7 @@
     "data_collection": {
         "tle_filter": {
             "enabled": true,
-            "pc_low": 1e-6,
+            "pc_low": 1e-7,
             "pc_high": 1e-3
         }
     }
