@@ -5,7 +5,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, Sequ
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
-from train.loss import LogSpaceHuberLoss, BerhuLoss
+from train.loss import LogSpaceHuberLoss, AsymmetricBerhuLoss
 from train.trainer import train_model, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
@@ -36,6 +36,7 @@ if __name__ == "__main__":
         'unc_d_model':      cfg['uncertainty_encoder']['d_model'],
         'unc_num_heads':    cfg['uncertainty_encoder']['num_heads'],
         'unc_dropout':      cfg['uncertainty_encoder']['dropout'],
+        'unc_num_layers':   cfg['uncertainty_encoder'].get('num_layers', 2),
         'fds':              fds_cfg.get('enabled', False),
         'fds_bucket_num':   fds_cfg.get('bucket_num', 100),
         'fds_ks':           fds_cfg.get('ks', 5),
@@ -84,9 +85,13 @@ if __name__ == "__main__":
         print("[Stage 1] FDS disabled — backbone will train on raw features.")
 
     loss_cfg  = cfg['loss']
-    loss_type = loss_cfg.get('type', 'berhu')
-    if loss_type == 'berhu':
-        criterion = BerhuLoss(delta=loss_cfg['delta'])
+    loss_type = loss_cfg.get('type', 'asymmetric_berhu')
+    if loss_type == 'asymmetric_berhu':
+        criterion = AsymmetricBerhuLoss(
+            delta=loss_cfg.get('delta', 1.0),
+            high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
+            alpha_high=loss_cfg.get('alpha_high', 2.5),
+        )
     else:
         criterion = LogSpaceHuberLoss(
             delta=loss_cfg['delta'], alpha=loss_cfg['alpha'])
