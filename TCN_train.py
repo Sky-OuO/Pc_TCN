@@ -6,9 +6,10 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, Sequ
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
 from train.loss import LogSpaceHuberLoss, AsymmetricBerhuLoss
-from train.trainer import train_model, train_stage2
+from train.trainer import train_stage1, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
+from logger import logger
 
 if __name__ == "__main__":
     with open('config.json') as f:
@@ -20,11 +21,11 @@ if __name__ == "__main__":
         test_size=cfg['data']['test_size'],
         random_state=cfg['data']['random_state'],
     )
-    print(f"Train features shape: {train_features.shape}, Train labels shape: {train_labels.shape}")
-    print(f"Validation features shape: {val_features.shape}, Validation labels shape: {val_labels.shape}")
+    logger.info(f"Train features shape: {train_features.shape}, Train labels shape: {train_labels.shape}")
+    logger.info(f"Validation features shape: {val_features.shape}, Validation labels shape: {val_labels.shape}")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
 
     fds_cfg = cfg.get('fds', {})
     head_cfg = cfg.get('regression_head', {})
@@ -76,13 +77,13 @@ if __name__ == "__main__":
         val_dataset, batch_size=cfg['training']['batch_size'], shuffle=False)
 
     model = TCN(**model_param)
-    print(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
 
-    #stage1 training with optional FDS disabled
-    dt_cfg = cfg.get('decoupled_training', {})
-    if dt_cfg.get('enabled', False):
-        model.use_fds = False
-        print("[Stage 1] FDS disabled — backbone will train on raw features.")
+    # Stage 1: always train backbone on raw features — FDS only in Stage 2
+    fds_was_enabled = model.use_fds
+    model.use_fds = False
+    if fds_was_enabled:
+        logger.info("[Stage 1] FDS temporarily disabled — backbone trains on raw features.")
 
     loss_cfg  = cfg['loss']
     loss_type = loss_cfg.get('type', 'asymmetric_berhu')
@@ -118,7 +119,7 @@ if __name__ == "__main__":
         milestones=[cfg['scheduler']['milestone']],
     )
 
-    trained_model = train_model(
+    trained_model = train_stage1(
         model, train_loader, val_loader, criterion, optimizer, scheduler,
         num_epochs=cfg['training']['num_epochs'], device=device,
         patience=cfg['training']['patience'],
@@ -126,14 +127,16 @@ if __name__ == "__main__":
         log_target_max=cfg['training']['log_target_max'],
     )
 
-    if dt_cfg.get('enabled', False):
-        print("\n" + "="*60)
-        print("Starting Stage 2: decoupled head training with FDS")
-        print("="*60)
+    dt_cfg = cfg.get('decoupled_training', {})
+    if dt_cfg.get('enabled', False) and fds_was_enabled:
+        logger.info("\n" + "="*60)
+        logger.info("Starting Stage 2: decoupled head training with FDS")
+        logger.info("="*60)
         # Load the best Stage 1 backbone weights before Stage 2
         model.load_state_dict(torch.load('params/best_model.pth',
-                                          map_location=device, weights_only=True))
-        model.use_fds = True
+                                          map_location=device, weights_only=True),
+                                          strict=False)
+        
         train_stage2(
             model, train_loader, val_loader, criterion, device,
             stage2_epochs=dt_cfg.get('stage2_epochs', 100),
@@ -144,6 +147,8 @@ if __name__ == "__main__":
             log_target_min=cfg['training']['log_target_min'],
             log_target_max=cfg['training']['log_target_max'],
         )
+    elif dt_cfg.get('enabled', False):
+        logger.info("\n[Stage 2] Skipped — FDS is disabled in model config.")
 
     evaluate_best_model(model_param, val_features, val_labels, device=device,
                         seq_length=cfg['data']['seq_length'])

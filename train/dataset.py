@@ -26,7 +26,7 @@ class SatelliteCollisionDataset(Dataset):
             seq_data = seq_data[-self.seq_length:]
         elif len(seq_data) < self.seq_length:
             pad_length = self.seq_length - len(seq_data)
-            seq_data = np.pad(seq_data, ((pad_length, 0), (0, 0)), mode='constant')
+            seq_data = np.pad(seq_data, ((pad_length, 0), (0, 0)), mode='edge')
 
         features_tensor = torch.FloatTensor(seq_data)
         label_tensor    = torch.FloatTensor([self.labels[idx]])

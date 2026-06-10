@@ -53,17 +53,17 @@
     "fds": {
         "enabled": true,
         "bucket_num": 100,
-        "ks": 7,
-        "sigma": 2,
+        "ks": 3,
+        "sigma": 0.5,
         "momentum": 0.9,
-        "start_update": 30,
-        "start_smooth": 50
+        "start_update": 50,
+        "start_smooth": 80
     },
     "lds": {
         "num_bins": 100,
         "kernel": "gaussian",
-        "ks": 5,
-        "sigma": 2
+        "ks": 3,
+        "sigma": 1.0
     },
     "regression_head": {
         "dims": [256, 128, 64]

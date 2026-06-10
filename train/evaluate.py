@@ -7,6 +7,7 @@ from train.dataset import SatelliteCollisionDataset
 import os
 import sys
 from datetime import datetime
+from logger import logger
 
 if not os.path.exists('logs'):
     os.makedirs('logs', exist_ok=True)
@@ -19,7 +20,8 @@ def format_breakdown_value(value, suffix=''):
 
 def load_best_model(model_param, device):
     model = TCN(**model_param)
-    model.load_state_dict(torch.load('params/best_model.pth', map_location=device, weights_only=True))
+    model.load_state_dict(torch.load('params/best_model.pth', map_location=device, weights_only=True),
+                          strict=False)
     model.eval()
     model.to(device)
     return model
@@ -84,24 +86,24 @@ def compute_breakdown(log_preds, log_gts, global_sigma):
 
 
 def print_global_summary(metrics, n_samples):
-    print(f"\n{'='*60}")
-    print(f"Evaluation on ALL {n_samples} validation samples")
-    print(f"{'='*60}")
-    print(f"  Mean bias (μ):   {metrics['mean_bias']:+.4f} orders of magnitude")
-    print(f"  1σ:              {metrics['sigma']:.4f} orders of magnitude")
-    print(f"  2σ:              {2*metrics['sigma']:.4f} orders of magnitude")
-    print(f"  Within 1σ:       {metrics['within_1sigma']:.1f}%  (ideal 68.3%)")
-    print(f"  Within 2σ:       {metrics['within_2sigma']:.1f}%  (ideal 95.4%)")
-    print(f"  Log10-MAE:       {metrics['log10_mae']:.4f} orders of magnitude")
-    print(f"  Log10-Median:    {metrics['log10_median']:.4f} orders of magnitude")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Evaluation on ALL {n_samples} validation samples")
+    logger.info(f"{'='*60}")
+    logger.info(f"  Mean bias (μ):   {metrics['mean_bias']:+.4f} orders of magnitude")
+    logger.info(f"  1σ:              {metrics['sigma']:.4f} orders of magnitude")
+    logger.info(f"  2σ:              {2*metrics['sigma']:.4f} orders of magnitude")
+    logger.info(f"  Within 1σ:       {metrics['within_1sigma']:.1f}%  (ideal 68.3%)")
+    logger.info(f"  Within 2σ:       {metrics['within_2sigma']:.1f}%  (ideal 95.4%)")
+    logger.info(f"  Log10-MAE:       {metrics['log10_mae']:.4f} orders of magnitude")
+    logger.info(f"  Log10-Median:    {metrics['log10_median']:.4f} orders of magnitude")
 
 
 def print_breakdown(breakdown_rows):
-    print(f"\n{'─'*75}")
-    print(f"{'Pc Range':<18} {'Count':>6} {'Bias(μ)':>9} {'1σ':>8} {'In 1σ':>8} {'In 2σ':>8}")
-    print(f"{'─'*75}")
+    logger.info(f"\n{'─'*75}")
+    logger.info(f"{'Pc Range':<18} {'Count':>6} {'Bias(μ)':>9} {'1σ':>8} {'In 1σ':>8} {'In 2σ':>8}")
+    logger.info(f"{'─'*75}")
     for row in breakdown_rows:
-        print(
+        logger.info(
             f"{row['pc_interval']:<18} {row['count']:>6d} "
             f"{format_breakdown_value(row['bias']):>9} "
             f"{format_breakdown_value(row['sigma']):>8} "
@@ -200,7 +202,7 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows):
     plt.tight_layout()
     plt.savefig(f'figures/prediction_scatter_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.png', dpi=200)
     plt.close()
-    print("Evaluation plots saved to 'figures/' directory")
+    logger.info("Evaluation plots saved to 'figures/' directory")
 
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
@@ -236,5 +238,5 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
         finally:
             sys.stdout = original_stdout
 
-    print(f"Evaluation log saved to '{log_path}'")
+    logger.info(f"Evaluation log saved to '{log_path}'")
     plot_eval_results(log_preds, log_gts, metrics, breakdown_rows)

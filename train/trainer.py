@@ -2,10 +2,11 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
+from logger import logger
 
 
 def _collect_features(model, dataset, device, batch_size=64, eps=1e-10):
-    """Collect all training features and integer bin labels for FDS stats update."""
+    """Collect per-sample features and bin labels — used only by Stage 2 FDS."""
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     model.eval()
     all_features, all_bin_labels = [], []
@@ -21,8 +22,8 @@ def _collect_features(model, dataset, device, batch_size=64, eps=1e-10):
     return torch.cat(all_features), torch.cat(all_bin_labels)
 
 
-def _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
-                     eps=1e-10, log_target_min=-9.0, log_target_max=-0.3):
+def _train_one_epoch(model, train_loader, criterion, optimizer, device,
+                     epoch=None, eps=1e-10, log_target_min=-9.0, log_target_max=-0.3):
     model.train()
     train_loss = 0.0
     for batch_features, batch_labels, batch_weights in train_loader:
@@ -32,10 +33,12 @@ def _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
         targets        = torch.clamp(batch_labels, min=eps)
         log_targets    = torch.clamp(torch.log10(targets), min=log_target_min, max=log_target_max)
 
-        bin_labels = torch.clamp(((log_targets + 10.0) * 10).long(), 0, 99).squeeze(1)
-
         optimizer.zero_grad()
-        log_outputs     = model(batch_features, labels=bin_labels, epoch=epoch)
+        if epoch is not None:
+            bin_labels = torch.clamp(((log_targets + 10.0) * 10).long(), 0, 99).squeeze(1)
+            log_outputs = model(batch_features, labels=bin_labels, epoch=epoch)
+        else:
+            log_outputs = model(batch_features)
         loss_per_sample = criterion(log_outputs, log_targets, reduction='none')
         loss            = (loss_per_sample * batch_weights).mean()
         loss.backward()
@@ -82,23 +85,18 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
     plt.close()
 
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
-                num_epochs=50, device='cuda', patience=50,
-                log_target_min=-9.0, log_target_max=-0.3):
+def train_stage1(model, train_loader, val_loader, criterion, optimizer, scheduler,
+                 num_epochs=300, device='cuda', patience=50,
+                 log_target_min=-9.0, log_target_max=-0.3):
+    """Stage 1: pure representation learning — no FDS, no feature smoothing."""
     model.to(device)
     best_val_loss    = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
 
     for epoch in range(num_epochs):
-        train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
+        train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device,
                                       log_target_min=log_target_min, log_target_max=log_target_max)
-
-        if getattr(model, 'use_fds', False) and epoch >= model.FDS.start_update:
-            all_feats, all_bins = _collect_features(model, train_loader.dataset, device)
-            model.FDS.update_last_epoch_stats(epoch)
-            model.FDS.update_running_stats(all_feats.to(device), all_bins.to(device), epoch)
-            model.train()
 
         val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device,
                                                   log_target_min=log_target_min,
@@ -119,19 +117,19 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             patience_counter += 1
 
         if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch+1}/{num_epochs}] lr={current_lr:.2e}')
-            print(f'Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, '
-                  f'Val Log10-MAE: {log_mae:.4f} orders')
-            print('-' * 50)
+            logger.info(f'[Stage1] Epoch [{epoch+1}/{num_epochs}] lr={current_lr:.2e}')
+            logger.info(f'Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, '
+                        f'Val Log10-MAE: {log_mae:.4f} orders')
+            logger.info('-' * 50)
 
         if patience_counter >= patience:
-            print(f"Early stop at epoch {epoch+1}")
+            logger.info(f"[Stage1] Early stop at epoch {epoch+1}")
             break
 
     plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve_stage1.png')
     return model
 
-# Stage 2: Decoupled head training with FDS enabled
+# Stage 2: FDS smoothing applied only to the regression head (backbone frozen)
 def train_stage2(model, train_loader, val_loader, criterion, device,
                  stage2_epochs=100, stage2_lr=1e-4, stage2_patience=30,
                  fds_start_update=0, fds_start_smooth=5,
@@ -156,7 +154,8 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
     train_losses, val_losses = [], []
 
     for epoch in range(stage2_epochs):
-        train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device, epoch,
+        train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device,
+                                      epoch=epoch,
                                       log_target_min=log_target_min, log_target_max=log_target_max)
 
         if getattr(model, 'use_fds', False) and epoch >= model.FDS.start_update:
@@ -183,13 +182,13 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
 
         if (epoch + 1) % 10 == 0:
             current_lr = optimizer.param_groups[0]['lr']
-            print(f'[Stage2] Epoch [{epoch+1}/{stage2_epochs}] lr={current_lr:.2e}')
-            print(f'Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, '
-                  f'Val Log10-MAE: {log_mae:.4f} orders')
-            print('-' * 50)
+            logger.info(f'[Stage2] Epoch [{epoch+1}/{stage2_epochs}] lr={current_lr:.2e}')
+            logger.info(f'Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, '
+                        f'Val Log10-MAE: {log_mae:.4f} orders')
+            logger.info('-' * 50)
 
         if patience_counter >= stage2_patience:
-            print(f"[Stage2] Early stop at epoch {epoch+1}")
+            logger.info(f"[Stage2] Early stop at epoch {epoch+1}")
             break
 
     plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve_stage2.png')

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal.windows import triang
+from logger import logger
 
 
 class TCNBlock(nn.Module):
@@ -223,7 +224,7 @@ class FDS(nn.Module):
 
     def update_last_epoch_stats(self, epoch):
         self._update_last_epoch_stats()
-        print(f"FDS: updated smoothed statistics at epoch {epoch}")
+        logger.debug(f"FDS: updated smoothed statistics at epoch {epoch}")
 
     def reset_running_stats(self):
         """Reset all statistics buffers for a clean Stage 2 start."""
@@ -234,7 +235,7 @@ class FDS(nn.Module):
         self.smoothed_mean_last_epoch.zero_()
         self.smoothed_var_last_epoch.fill_(1.0)
         self.num_samples_tracked.zero_()
-        print("FDS: running stats reset for Stage 2.")
+        logger.debug("FDS: running stats reset for Stage 2.")
 
     def update_running_stats(self, features, labels, epoch):
         assert self.feature_dim == features.size(1)
@@ -259,7 +260,7 @@ class FDS(nn.Module):
             factor = 0.0 if epoch == self.start_update else factor
             self.running_mean[idx] = (1 - factor) * curr_mean + factor * self.running_mean[idx]
             self.running_var[idx]  = (1 - factor) * curr_var  + factor * self.running_var[idx]
-        print(f"FDS: updated running stats at epoch {epoch}")
+        logger.debug(f"FDS: updated running stats at epoch {epoch}")
 
     def smooth(self, features, labels, epoch):
         if epoch < self.start_smooth:
@@ -388,12 +389,12 @@ class TCN(nn.Module):
                        self.film_mid, self.film]:
             for param in module.parameters():
                 param.requires_grad = False
-        print("Backbone frozen for Stage 2 decoupled training.")
+        logger.info("Backbone frozen for Stage 2 decoupled training.")
 
     def unfreeze_all(self):
         for param in self.parameters():
             param.requires_grad = True
-        print("All parameters unfrozen.")
+        logger.info("All parameters unfrozen.")
 
     def forward(self, x, labels=None, epoch=0):
         # x: (batch, seq_len, total_features)
