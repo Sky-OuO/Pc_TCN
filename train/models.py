@@ -411,7 +411,7 @@ class TCN(nn.Module):
     def freeze_backbone(self):
         for module in [self.network_early, self.network_late,
                        self.temporal_pool, self.uncertainty_encoder,
-                       self.unc_mlp, self.film_mid, self.film]:
+                       self.film_mid, self.film]:
             for param in module.parameters():
                 param.requires_grad = False
         logger.info("Backbone frozen for Stage 2 decoupled training.")
