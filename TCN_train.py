@@ -47,7 +47,7 @@ if __name__ == "__main__":
         'fds_start_smooth': fds_cfg.get('start_smooth', 1),
         'head_dims':        head_cfg.get('dims', None),
     }
-
+    logger.info(f"config checkpoint: {cfg}")
     lds_cfg       = cfg.get('lds', {})
     log_target_min = cfg['training']['log_target_min']
     log_target_max = cfg['training']['log_target_max']

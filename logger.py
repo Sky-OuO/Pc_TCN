@@ -1,10 +1,11 @@
 import logging
 import os
+from datetime import datetime
 
 _LOG_DIR = "logs"
 os.makedirs(_LOG_DIR, exist_ok=True)
 
-logger = logging.getLogger("ameath_agent")
+logger = logging.getLogger("Pc_TCN")
 logger.setLevel(logging.DEBUG)
 
 if not logger.handlers:
@@ -19,7 +20,7 @@ if not logger.handlers:
     logger.addHandler(_console)
 
     _file = logging.FileHandler(
-        os.path.join(_LOG_DIR, "agent.log"), encoding="utf-8"
+        os.path.join(_LOG_DIR, f"Pc_TCN_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"), encoding="utf-8"
     )
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(_fmt)

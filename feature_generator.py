@@ -40,12 +40,21 @@ def _debris_phase(launch_age_years, a=2.0, b=7.0):
         return [0, 0, 1]
 
 def _build_uncertainty_features(sat, tle_age_days, tca_time, name=None):
+    EPS = 1e-10
     e     = sat.ecco
+    n     = sat.no_kozai          
     bstar = sat.bstar
     tau   = tle_age_days
+
+    raw_features = [
+        e,
+        math.log(max(n, EPS)),
+        math.log(abs(bstar) + EPS),
+        math.log(max(tau + 1.0, EPS)),
+    ]
     phase = (_debris_phase(_compute_launch_age_years(sat.intldesg, tca_time))
              if _is_debris_by_name(name) else [0, 0, 0])
-    return [e, bstar, tau, bstar * tau, e * tau, tau ** 2] + phase
+    return raw_features + phase
 
 class Feature_Generator:
     def __init__(self, tle_line1, tle_line2, tle_line3, tle_line4, tca_time,
@@ -134,8 +143,8 @@ class Feature_Generator:
                 v1_mag,             # sat1 orbit velocity
                 r2_mag,             # sat2 orbit radius
                 v2_mag,             # sat2 orbit velocity
-                *unc1,              # obj1 uncertainty features (9-dim)
-                *unc2,              # obj2 uncertainty features (9-dim)
+                *unc1,              # obj1 uncertainty features (7-dim: 4 raw + 3 phase)
+                *unc2,              # obj2 uncertainty features (7-dim: 4 raw + 3 phase)
             ])
         
         return np.array(features) 

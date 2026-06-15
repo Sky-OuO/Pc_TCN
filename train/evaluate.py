@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset
 import os
-import sys
 from datetime import datetime
 from logger import logger
 
@@ -206,10 +205,7 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows):
 
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
-                        seq_length=601, log_path=None):
-    if log_path is None:
-        log_path = f'logs/eval_results_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log'
-
+                        seq_length=601):
     eps                        = 1e-10
     model                      = load_best_model(model_param, device)
     log_preds, all_gts         = run_inference(model, val_features, val_labels, device, seq_length)
@@ -217,26 +213,7 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
     metrics                    = compute_global_metrics(log_preds, log_gts)
     breakdown_rows             = compute_breakdown(log_preds, log_gts, metrics['sigma'])
 
-    class _Tee:
-        def __init__(self, stream, fh):
-            self._stream = stream
-            self._fh     = fh
-        def write(self, data):
-            self._stream.write(data)
-            self._fh.write(data)
-        def flush(self):
-            self._stream.flush()
-            self._fh.flush()
+    print_global_summary(metrics, len(all_gts))
+    print_breakdown(breakdown_rows)
 
-    with open(log_path, 'w', encoding='utf-8') as fh:
-        fh.write(f"Model parameters: {model_param}\n")
-        original_stdout = sys.stdout
-        sys.stdout      = _Tee(original_stdout, fh)
-        try:
-            print_global_summary(metrics, len(all_gts))
-            print_breakdown(breakdown_rows)
-        finally:
-            sys.stdout = original_stdout
-
-    logger.info(f"Evaluation log saved to '{log_path}'")
     plot_eval_results(log_preds, log_gts, metrics, breakdown_rows)

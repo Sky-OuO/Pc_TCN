@@ -51,7 +51,7 @@
         "threshold_b_years": 7.0
     },
     "fds": {
-        "enabled": true,
+        "enabled": false,
         "bucket_num": 100,
         "ks": 3,
         "sigma": 0.5,
