@@ -16,7 +16,8 @@
         "delta": 1.0,
         "alpha": 1.5,
         "high_pc_threshold": -2.0,
-        "alpha_high": 2.5
+        "alpha_high": 2.5,
+        "lambda_mse": 0.15
     },
     "training": {
         "num_epochs": 300,
@@ -32,8 +33,7 @@
     "scheduler": {
         "warmup_start_factor": 0.01,
         "warmup_total_iters": 10,
-        "cosine_T_0": 50,
-        "cosine_T_mult": 2,
+        "cosine_T_max": 290,
         "cosine_eta_min": 1e-6,
         "milestone": 10
     },

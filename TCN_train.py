@@ -1,7 +1,7 @@
 import json
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
@@ -10,6 +10,7 @@ from train.trainer import train_stage1, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
 from logger import logger
+from datetime import datetime
 
 if __name__ == "__main__":
     with open('config.json') as f:
@@ -92,6 +93,7 @@ if __name__ == "__main__":
             delta=loss_cfg.get('delta', 1.0),
             high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
             alpha_high=loss_cfg.get('alpha_high', 2.5),
+            lambda_mse=loss_cfg.get('lambda_mse', 0.15),
         )
     else:
         criterion = LogSpaceHuberLoss(
@@ -107,10 +109,9 @@ if __name__ == "__main__":
         start_factor=cfg['scheduler']['warmup_start_factor'],
         total_iters=cfg['scheduler']['warmup_total_iters'],
     )
-    cosine_scheduler = CosineAnnealingWarmRestarts(
+    cosine_scheduler = CosineAnnealingLR(
         optimizer,
-        T_0=cfg['scheduler']['cosine_T_0'],
-        T_mult=cfg['scheduler']['cosine_T_mult'],
+        T_max=cfg['scheduler']['cosine_T_max'],
         eta_min=cfg['scheduler']['cosine_eta_min'],
     )
     scheduler = SequentialLR(
@@ -133,7 +134,7 @@ if __name__ == "__main__":
         logger.info("Starting Stage 2: decoupled head training with FDS")
         logger.info("="*60)
         # Load the best Stage 1 backbone weights before Stage 2
-        model.load_state_dict(torch.load('params/best_model.pth',
+        model.load_state_dict(torch.load(f'params/best_model_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth',
                                           map_location=device, weights_only=True),
                                           strict=False)
         
