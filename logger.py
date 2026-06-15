@@ -19,9 +19,9 @@ if not logger.handlers:
     logger.addHandler(_console)
 
 
-def setup_file_handler(run_id: str):
+def setup_file_handler(timestamp: str):
     _file = logging.FileHandler(
-        os.path.join(_LOG_DIR, f"Pc_TCN_{run_id}.log"), encoding="utf-8"
+        os.path.join(_LOG_DIR, f"Pc_TCN_{timestamp}.log"), encoding="utf-8"
     )
     _file.setLevel(logging.DEBUG)
     _fmt = logging.Formatter(
@@ -30,4 +30,4 @@ def setup_file_handler(run_id: str):
     )
     _file.setFormatter(_fmt)
     logger.addHandler(_file)
-    return run_id
+    return timestamp

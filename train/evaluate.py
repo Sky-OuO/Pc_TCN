@@ -17,9 +17,9 @@ def format_breakdown_value(value, suffix=''):
     return f"{value:.1f}{suffix}" if suffix else f"{value:+.4f}" if value < 0 else f"{value:.4f}"
 
 
-def load_best_model(model_param, device):
+def load_best_model(model_param, device, timestamp=''):
     model = TCN(**model_param)
-    model.load_state_dict(torch.load(f'params/best_model_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth', map_location=device, weights_only=True),
+    model.load_state_dict(torch.load(f'params/best_model_{timestamp}.pth' , map_location=device, weights_only=True),
                           strict=False)
     model.eval()
     model.to(device)
@@ -112,7 +112,7 @@ def print_breakdown(breakdown_rows):
 
 
 
-def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, run_id=''):
+def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp=''):
     log10_errors     = np.abs(log_preds - log_gts)
     log10_signed     = log_preds - log_gts
     sigma            = metrics['sigma']
@@ -199,15 +199,15 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, run_id=''):
             cell.set_facecolor('#f7f7f7')
 
     plt.tight_layout()
-    plt.savefig(f'figures/prediction_scatter_{run_id}.png', dpi=200)
+    plt.savefig(f'figures/prediction_scatter_{timestamp}.png', dpi=200)
     plt.close()
     logger.info("Evaluation plots saved to 'figures/' directory")
 
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
-                        seq_length=601, run_id=''):
+                        seq_length=601, timestamp=''):
     eps                        = 1e-10
-    model                      = load_best_model(model_param, device, run_id=run_id)
+    model                      = load_best_model(model_param, device, timestamp=timestamp)
     log_preds, all_gts         = run_inference(model, val_features, val_labels, device, seq_length)
     log_gts                    = np.log10(np.maximum(all_gts, eps))
     metrics                    = compute_global_metrics(log_preds, log_gts)
@@ -216,4 +216,4 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
     print_global_summary(metrics, len(all_gts))
     print_breakdown(breakdown_rows)
 
-    plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, run_id=run_id)
+    plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp=timestamp)

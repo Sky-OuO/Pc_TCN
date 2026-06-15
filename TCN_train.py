@@ -122,14 +122,14 @@ if __name__ == "__main__":
         milestones=[cfg['scheduler']['milestone']],
     )
 
-    trained_model = train_stage1(
-        model, train_loader, val_loader, criterion, optimizer, scheduler,
-        num_epochs=cfg['training']['num_epochs'], device=device,
-        patience=cfg['training']['patience'],
-        log_target_min=cfg['training']['log_target_min'],
-        log_target_max=cfg['training']['log_target_max'],
-        run_id=timestamp,
-    )
+    # trained_model = train_stage1(
+    #     model, train_loader, val_loader, criterion, optimizer, scheduler,
+    #     num_epochs=cfg['training']['num_epochs'], device=device,
+    #     patience=cfg['training']['patience'],
+    #     log_target_min=cfg['training']['log_target_min'],
+    #     log_target_max=cfg['training']['log_target_max'],
+    #     timestamp=timestamp,
+    # )
 
     dt_cfg = cfg.get('decoupled_training', {})
     if dt_cfg.get('enabled', False) and fds_was_enabled:
@@ -150,10 +150,10 @@ if __name__ == "__main__":
             fds_start_smooth=dt_cfg.get('fds_start_smooth', 5),
             log_target_min=cfg['training']['log_target_min'],
             log_target_max=cfg['training']['log_target_max'],
-            run_id=timestamp,
+            timestamp=timestamp,
         )
     elif dt_cfg.get('enabled', False):
         logger.info("\n[Stage 2] Skipped — FDS is disabled in model config.")
 
     evaluate_best_model(model_param, val_features, val_labels, device=device,
-                        seq_length=cfg['data']['seq_length'], run_id=timestamp)
+                        seq_length=cfg['data']['seq_length'], timestamp=timestamp)
