@@ -9,12 +9,14 @@ from train.loss import LogSpaceHuberLoss, AsymmetricBerhuLoss
 from train.trainer import train_stage1, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
-from logger import logger
+from logger import logger, setup_file_handler
 from datetime import datetime
 
 if __name__ == "__main__":
     with open('config.json') as f:
         cfg = json.load(f)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    setup_file_handler(timestamp)
 
     train_features, train_labels, val_features, val_labels = load_data(
         cfg['data']['feature_path'],
@@ -126,6 +128,7 @@ if __name__ == "__main__":
         patience=cfg['training']['patience'],
         log_target_min=cfg['training']['log_target_min'],
         log_target_max=cfg['training']['log_target_max'],
+        run_id=timestamp,
     )
 
     dt_cfg = cfg.get('decoupled_training', {})
@@ -134,7 +137,7 @@ if __name__ == "__main__":
         logger.info("Starting Stage 2: decoupled head training with FDS")
         logger.info("="*60)
         # Load the best Stage 1 backbone weights before Stage 2
-        model.load_state_dict(torch.load(f'params/best_model_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth',
+        model.load_state_dict(torch.load(f'params/best_model_{timestamp}.pth',
                                           map_location=device, weights_only=True),
                                           strict=False)
         
@@ -147,9 +150,10 @@ if __name__ == "__main__":
             fds_start_smooth=dt_cfg.get('fds_start_smooth', 5),
             log_target_min=cfg['training']['log_target_min'],
             log_target_max=cfg['training']['log_target_max'],
+            run_id=timestamp,
         )
     elif dt_cfg.get('enabled', False):
         logger.info("\n[Stage 2] Skipped — FDS is disabled in model config.")
 
     evaluate_best_model(model_param, val_features, val_labels, device=device,
-                        seq_length=cfg['data']['seq_length'])
+                        seq_length=cfg['data']['seq_length'], run_id=timestamp)
