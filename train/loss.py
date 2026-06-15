@@ -21,12 +21,11 @@ class LogSpaceHuberLoss(nn.Module):
 
 
 class AsymmetricBerhuLoss(nn.Module):
-    def __init__(self, delta=1.0, high_pc_threshold=-2.0, alpha_high=2.5, lambda_mse=0.15):
+    def __init__(self, delta=1.0, high_pc_threshold=-2.0, alpha_high=2.5):
         super().__init__()
         self.delta             = delta
         self.high_pc_threshold = high_pc_threshold
         self.alpha_high        = alpha_high
-        self.lambda_mse        = lambda_mse
 
     def forward(self, log_predictions, log_targets, reduction='mean'):
         diff     = log_predictions - log_targets
@@ -41,10 +40,6 @@ class AsymmetricBerhuLoss(nn.Module):
         asym_mask       = high_pc_mask & under_pred_mask
         loss_flat       = loss.squeeze(-1)
         loss_flat       = torch.where(asym_mask, loss_flat * self.alpha_high, loss_flat)
-
-        # Symmetric MSE anchor — penalizes bias toward zero-mean error
-        mse = diff.squeeze(-1) ** 2
-        loss_flat = loss_flat + self.lambda_mse * mse
 
         if reduction == 'none':
             return loss_flat

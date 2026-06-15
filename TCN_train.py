@@ -1,7 +1,7 @@
 import json
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
@@ -95,7 +95,6 @@ if __name__ == "__main__":
             delta=loss_cfg.get('delta', 1.0),
             high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
             alpha_high=loss_cfg.get('alpha_high', 2.5),
-            lambda_mse=loss_cfg.get('lambda_mse', 0.15),
         )
     else:
         criterion = LogSpaceHuberLoss(
@@ -111,9 +110,10 @@ if __name__ == "__main__":
         start_factor=cfg['scheduler']['warmup_start_factor'],
         total_iters=cfg['scheduler']['warmup_total_iters'],
     )
-    cosine_scheduler = CosineAnnealingLR(
+    cosine_scheduler = CosineAnnealingWarmRestarts(
         optimizer,
-        T_max=cfg['scheduler']['cosine_T_max'],
+        T_0=cfg['scheduler']['cosine_T_0'],
+        T_mult=cfg['scheduler']['cosine_T_mult'],
         eta_min=cfg['scheduler']['cosine_eta_min'],
     )
     scheduler = SequentialLR(
@@ -122,14 +122,14 @@ if __name__ == "__main__":
         milestones=[cfg['scheduler']['milestone']],
     )
 
-    # trained_model = train_stage1(
-    #     model, train_loader, val_loader, criterion, optimizer, scheduler,
-    #     num_epochs=cfg['training']['num_epochs'], device=device,
-    #     patience=cfg['training']['patience'],
-    #     log_target_min=cfg['training']['log_target_min'],
-    #     log_target_max=cfg['training']['log_target_max'],
-    #     timestamp=timestamp,
-    # )
+    trained_model = train_stage1(
+        model, train_loader, val_loader, criterion, optimizer, scheduler,
+        num_epochs=cfg['training']['num_epochs'], device=device,
+        patience=cfg['training']['patience'],
+        log_target_min=cfg['training']['log_target_min'],
+        log_target_max=cfg['training']['log_target_max'],
+        timestamp=timestamp,
+    )
 
     dt_cfg = cfg.get('decoupled_training', {})
     if dt_cfg.get('enabled', False) and fds_was_enabled:
