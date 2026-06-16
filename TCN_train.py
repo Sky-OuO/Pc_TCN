@@ -95,6 +95,12 @@ if __name__ == "__main__":
             delta=loss_cfg.get('delta', 1.0),
             high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
             alpha_high=loss_cfg.get('alpha_high', 2.5),
+            lambda_mse=loss_cfg.get('lambda_mse', 0.15),
+            mid_range_weight=loss_cfg.get('mid_range_weight', 2.0),
+            mid_low=loss_cfg.get('mid_low', -6.0),
+            mid_high=loss_cfg.get('mid_high', -3.0),
+            lambda_high_bias=loss_cfg.get('lambda_high_bias', 0.5),
+            high_bias_min_count=loss_cfg.get('high_bias_min_count', 4),
         )
     else:
         criterion = LogSpaceHuberLoss(
