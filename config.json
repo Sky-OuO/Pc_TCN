@@ -58,9 +58,9 @@
     },
     "fds": {
         "enabled": true,
-        "bucket_num": 100,
-        "ks": 3,
-        "sigma": 0.5,
+        "bucket_num": 60,
+        "ks": 5,
+        "sigma": 1.0,
         "momentum": 0.9,
         "start_update": 50,
         "start_smooth": 80
@@ -80,13 +80,13 @@
         "stage2_lr": 1e-4,
         "stage2_patience": 60,
         "fds_start_update": 0,
-        "fds_start_smooth": 10
+        "fds_start_smooth": 30
     },
     "data_collection": {
         "tle_filter": {
             "enabled": true,
-            "pc_low": 1e-7,
-            "pc_high": 1e-3
+            "pc_low": 5e-5,
+            "pc_high": 5e-3
         }
     }
 }

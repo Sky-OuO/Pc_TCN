@@ -93,6 +93,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
     best_val_loss    = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
+    best_state = None
 
     for epoch in range(num_epochs):
         train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device,
@@ -104,7 +105,6 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        torch.save(model.state_dict(), f'params/last_model_{timestamp}.pth')
 
         current_lr = optimizer.param_groups[0]['lr']
         scheduler.step()
@@ -112,7 +112,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
         if val_loss < best_val_loss:
             best_val_loss    = val_loss
             patience_counter = 0
-            torch.save(model.state_dict(), f'params/best_model_{timestamp}.pth')
+            best_state       = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
 
@@ -125,6 +125,10 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
         if patience_counter >= patience:
             logger.info(f"[Stage1] Early stop at epoch {epoch+1}")
             break
+
+    if best_state is not None:
+        torch.save(best_state, f'params/best_model_{timestamp}.pth')
+        logger.info(f"[Stage1] Best model saved (val_loss={best_val_loss:.6f})")
 
     plot_loss_curve(train_losses, val_losses, filename=f'figures/loss_curve_stage1_{timestamp}.png')
     return model
@@ -154,6 +158,7 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
     best_val_loss    = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
+    best_state = None
 
     for epoch in range(stage2_epochs):
         train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device,
@@ -172,13 +177,12 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        torch.save(model.state_dict(), f'params/last_model_{timestamp}.pth')
         scheduler.step()
 
         if val_loss < best_val_loss:
             best_val_loss    = val_loss
             patience_counter = 0
-            torch.save(model.state_dict(), f'params/best_model_{timestamp}.pth')
+            best_state       = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
 
@@ -192,6 +196,10 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
         if patience_counter >= stage2_patience:
             logger.info(f"[Stage2] Early stop at epoch {epoch+1}")
             break
+
+    if best_state is not None:
+        torch.save(best_state, f'params/best_model_{timestamp}.pth')
+        logger.info(f"[Stage2] Best model saved (val_loss={best_val_loss:.6f})")
 
     plot_loss_curve(train_losses, val_losses, filename=f'figures/loss_curve_stage2_{timestamp}.png')
     return model
