@@ -84,11 +84,11 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
     plt.savefig(filename, dpi=200)
     plt.close()
 
-
+# Stage 1: standard training of the entire model (backbone + head)
 def train_stage1(model, train_loader, val_loader, criterion, optimizer, scheduler,
                  num_epochs=300, device='cuda', patience=50,
-                 log_target_min=-9.0, log_target_max=-0.3):
-    """Stage 1: pure representation learning — no FDS, no feature smoothing."""
+                 log_target_min=-9.0, log_target_max=-0.3, timestamp=''):
+
     model.to(device)
     best_val_loss    = float('inf')
     patience_counter = 0
@@ -104,7 +104,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        torch.save(model.state_dict(), 'params/last_model.pth')
+        torch.save(model.state_dict(), f'params/last_model_{timestamp}.pth')
 
         current_lr = optimizer.param_groups[0]['lr']
         scheduler.step()
@@ -112,7 +112,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
         if val_loss < best_val_loss:
             best_val_loss    = val_loss
             patience_counter = 0
-            torch.save(model.state_dict(), 'params/best_model.pth')
+            torch.save(model.state_dict(), f'params/best_model_{timestamp}.pth')
         else:
             patience_counter += 1
 
@@ -126,14 +126,16 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
             logger.info(f"[Stage1] Early stop at epoch {epoch+1}")
             break
 
-    plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve_stage1.png')
+    plot_loss_curve(train_losses, val_losses, filename=f'figures/loss_curve_stage1_{timestamp}.png')
     return model
 
 # Stage 2: FDS smoothing applied only to the regression head (backbone frozen)
 def train_stage2(model, train_loader, val_loader, criterion, device,
                  stage2_epochs=100, stage2_lr=1e-4, stage2_patience=30,
                  fds_start_update=0, fds_start_smooth=5,
-                 log_target_min=-9.0, log_target_max=-0.3):
+                 log_target_min=-9.0, log_target_max=-0.3, timestamp=''):
+
+
     model.to(device)
     model.freeze_backbone()
 
@@ -170,13 +172,13 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        torch.save(model.state_dict(), 'params/last_model.pth')
+        torch.save(model.state_dict(), f'params/last_model_{timestamp}.pth')
         scheduler.step()
 
         if val_loss < best_val_loss:
             best_val_loss    = val_loss
             patience_counter = 0
-            torch.save(model.state_dict(), 'params/best_model.pth')
+            torch.save(model.state_dict(), f'params/best_model_{timestamp}.pth')
         else:
             patience_counter += 1
 
@@ -191,5 +193,5 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
             logger.info(f"[Stage2] Early stop at epoch {epoch+1}")
             break
 
-    plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve_stage2.png')
+    plot_loss_curve(train_losses, val_losses, filename=f'figures/loss_curve_stage2_{timestamp}.png')
     return model

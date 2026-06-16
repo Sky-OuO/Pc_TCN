@@ -7,7 +7,7 @@
         "seq_length": 601
     },
     "model": {
-        "num_channels": [32, 64, 64, 128, 128],
+        "num_channels": [64, 128, 128, 256, 256],
         "kernel_size": 5,
         "dropout": 0.2
     },
@@ -15,13 +15,19 @@
         "type": "asymmetric_berhu",
         "delta": 1.0,
         "alpha": 1.5,
-        "high_pc_threshold": -2.0,
-        "alpha_high": 2.5
+        "high_pc_threshold": -3.0,
+        "alpha_high": 2.5,
+        "lambda_mse": 0.15,
+        "mid_range_weight": 2.0,
+        "mid_low": -5.5,
+        "mid_high": -3.5,
+        "lambda_high_bias": 0.5,
+        "high_bias_min_count": 4
     },
     "training": {
         "num_epochs": 300,
         "batch_size": 32,
-        "patience": 50,
+        "patience": 120,
         "log_target_min": -9.0,
         "log_target_max": -0.3
     },
@@ -63,7 +69,7 @@
         "num_bins": 100,
         "kernel": "gaussian",
         "ks": 3,
-        "sigma": 1.0
+        "sigma": 0.5
     },
     "regression_head": {
         "dims": [256, 128, 64]

@@ -294,9 +294,20 @@ class TCN(nn.Module):
                  head_dims=None):
         super(TCN, self).__init__()
 
-        self.unc_feature_dim = 18   # 9-dim per object x 2 objects
+        self.unc_feature_dim = 14   # 7-dim per object x 2 objects (4 raw + 3 phase)
         self.geo_feature_dim = input_size - self.unc_feature_dim
         self.use_fds         = fds
+
+        self.unc_mlp = nn.Sequential(
+            nn.LayerNorm(4),
+            nn.Linear(4, 32),
+            nn.GELU(),
+            nn.Linear(32, 32),
+            nn.GELU(),
+            nn.Linear(32, 16),
+            nn.GELU(),
+            nn.Linear(16, 8),
+        )
 
         num_levels = len(num_channels)
         split_idx  = num_levels // 2  # split point for multi-scale FiLM
@@ -323,7 +334,7 @@ class TCN(nn.Module):
         self.temporal_pool = TemporalAttentionPooling(out_channels)
 
         self.uncertainty_encoder = CrossAttentionUncertaintyEncoder(
-            input_dim=9,
+            input_dim=15,  # 8 MLP + 4 raw residual + 3 phase
             d_model=unc_d_model,
             num_heads=unc_num_heads,
             output_dim=out_channels,
@@ -362,12 +373,26 @@ class TCN(nn.Module):
             )
 
     def extract_features(self, x):
-        x_geo  = x[:, :, :-self.unc_feature_dim]    # (batch, seq_len, geo_dim)
-        x_unc1 = x[:, :, -self.unc_feature_dim:-9]  # (batch, seq_len, 9)
-        x_unc2 = x[:, :, -9:]                        # (batch, seq_len, 9)
+        x_geo  = x[:, :, :-self.unc_feature_dim]     # (batch, seq_len, geo_dim)
+        x_unc1 = x[:, :, -self.unc_feature_dim:-7]   # (batch, seq_len, 7): raw(4)+phase(3)
+        x_unc2 = x[:, :, -7:]                         # (batch, seq_len, 7)
 
-        # Uncertainty encoder runs on full sequence
-        fusion_unc = self.uncertainty_encoder(x_unc1, x_unc2)  # (batch, out_channels)
+        # Split raw uncertainty features (4-dim) from debris phase (3-dim)
+        raw_unc1 = x_unc1[:, :, :4]   # (batch, seq_len, 4)
+        phase1   = x_unc1[:, :, 4:]   # (batch, seq_len, 3)
+        raw_unc2 = x_unc2[:, :, :4]   # (batch, seq_len, 4)
+        phase2   = x_unc2[:, :, 4:]   # (batch, seq_len, 3)
+
+        # MLP transforms raw features → 8-dim embedding
+        emb1 = self.unc_mlp(raw_unc1)  # (batch, seq_len, 8)
+        emb2 = self.unc_mlp(raw_unc2)  # (batch, seq_len, 8)
+
+        # Residual: concatenate MLP embedding + raw features + debris phase → 15-dim
+        unc1 = torch.cat([emb1, raw_unc1, phase1], dim=-1)  # (batch, seq_len, 15)
+        unc2 = torch.cat([emb2, raw_unc2, phase2], dim=-1)  # (batch, seq_len, 15)
+
+        # Uncertainty encoder runs on 15-dim full sequence
+        fusion_unc = self.uncertainty_encoder(unc1, unc2)  # (batch, out_channels)
 
         # Geo early path
         x_geo     = x_geo.transpose(1, 2)                       # (batch, geo_dim, seq_len)
@@ -386,7 +411,7 @@ class TCN(nn.Module):
     def freeze_backbone(self):
         for module in [self.network_early, self.network_late,
                        self.temporal_pool, self.uncertainty_encoder,
-                       self.film_mid, self.film]:
+                       self.unc_mlp, self.film_mid, self.film]:
             for param in module.parameters():
                 param.requires_grad = False
         logger.info("Backbone frozen for Stage 2 decoupled training.")
