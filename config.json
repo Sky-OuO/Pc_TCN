@@ -24,6 +24,22 @@
         "lambda_high_bias": 0.5,
         "high_bias_min_count": 4
     },
+    "physics_proxy": {
+        "enabled": true,
+        "expected_raw_feature_dim": 30,
+        "pmax_feature_index": 27,
+        "lambda_pmax": 0.05,
+        "pmax_margin": 1.0,
+        "lambda_pmax_recall": 0.5,
+        "pmax_recall_threshold": -2.0,
+        "pmax_recall_temperature": 0.5,
+        "pmax_recall_tolerance": 0.25,
+        "lambda_mid_over": 0.3,
+        "mid_over_low": -6.0,
+        "mid_over_high": -4.0,
+        "mid_over_target_margin": 1.0,
+        "mid_over_pmax_margin": 0.75
+    },
     "training": {
         "num_epochs": 300,
         "batch_size": 32,
@@ -59,8 +75,8 @@
     "fds": {
         "enabled": true,
         "bucket_num": 60,
-        "ks": 5,
-        "sigma": 1.0,
+        "ks": 3,
+        "sigma": 0.5,
         "momentum": 0.9,
         "start_update": 50,
         "start_smooth": 80

@@ -1,11 +1,12 @@
 import json
 import torch
+import numpy as np
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
-from train.loss import LogSpaceHuberLoss, AsymmetricBerhuLoss
+from train.loss import AsymmetricBerhuLoss
 from train.trainer import train_stage1, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
@@ -18,11 +19,23 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     setup_file_handler(timestamp)
 
+    physics_cfg = cfg.get('physics_proxy', {})
+    pmax_feature_index = None
+    preserve_feature_indices = None
+    if physics_cfg.get('enabled', False):
+        raw_feature_dim = np.load(cfg['data']['feature_path'], mmap_mode='r').shape[2]
+        if raw_feature_dim >= physics_cfg.get('expected_raw_feature_dim', 30):
+            pmax_feature_index = physics_cfg.get('pmax_feature_index', 27)
+            preserve_feature_indices = [pmax_feature_index]
+        else:
+            logger.info("[Physics Proxy] Skipped Pmax penalty: regenerate features to include Pmax proxy columns.")
+
     train_features, train_labels, val_features, val_labels = load_data(
         cfg['data']['feature_path'],
         cfg['data']['label_path'],
         test_size=cfg['data']['test_size'],
         random_state=cfg['data']['random_state'],
+        preserve_feature_indices=preserve_feature_indices,
     )
     logger.info(f"Train features shape: {train_features.shape}, Train labels shape: {train_labels.shape}")
     logger.info(f"Validation features shape: {val_features.shape}, Validation labels shape: {val_labels.shape}")
@@ -89,22 +102,28 @@ if __name__ == "__main__":
         logger.info("[Stage 1] FDS temporarily disabled — backbone trains on raw features.")
 
     loss_cfg  = cfg['loss']
-    loss_type = loss_cfg.get('type', 'asymmetric_berhu')
-    if loss_type == 'asymmetric_berhu':
-        criterion = AsymmetricBerhuLoss(
-            delta=loss_cfg.get('delta', 1.0),
-            high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
-            alpha_high=loss_cfg.get('alpha_high', 2.5),
-            lambda_mse=loss_cfg.get('lambda_mse', 0.15),
-            mid_range_weight=loss_cfg.get('mid_range_weight', 2.0),
-            mid_low=loss_cfg.get('mid_low', -6.0),
-            mid_high=loss_cfg.get('mid_high', -3.0),
-            lambda_high_bias=loss_cfg.get('lambda_high_bias', 0.5),
-            high_bias_min_count=loss_cfg.get('high_bias_min_count', 4),
-        )
-    else:
-        criterion = LogSpaceHuberLoss(
-            delta=loss_cfg['delta'], alpha=loss_cfg['alpha'])
+    criterion = AsymmetricBerhuLoss(
+        delta=loss_cfg.get('delta', 1.0),
+        high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
+        alpha_high=loss_cfg.get('alpha_high', 2.5),
+        lambda_mse=loss_cfg.get('lambda_mse', 0.15),
+        mid_range_weight=loss_cfg.get('mid_range_weight', 2.0),
+        mid_low=loss_cfg.get('mid_low', -6.0),
+        mid_high=loss_cfg.get('mid_high', -3.0),
+        lambda_high_bias=loss_cfg.get('lambda_high_bias', 0.5),
+        high_bias_min_count=loss_cfg.get('high_bias_min_count', 4),
+        lambda_pmax=physics_cfg.get('lambda_pmax', 0.0) if pmax_feature_index is not None else 0.0,
+        pmax_margin=physics_cfg.get('pmax_margin', 0.75),
+        lambda_pmax_recall=physics_cfg.get('lambda_pmax_recall', 0.0) if pmax_feature_index is not None else 0.0,
+        pmax_recall_threshold=physics_cfg.get('pmax_recall_threshold', -2.0),
+        pmax_recall_temperature=physics_cfg.get('pmax_recall_temperature', 0.5),
+        pmax_recall_tolerance=physics_cfg.get('pmax_recall_tolerance', 0.25),
+        lambda_mid_over=physics_cfg.get('lambda_mid_over', 0.0) if pmax_feature_index is not None else 0.0,
+        mid_over_low=physics_cfg.get('mid_over_low', -6.0),
+        mid_over_high=physics_cfg.get('mid_over_high', -4.0),
+        mid_over_target_margin=physics_cfg.get('mid_over_target_margin', 1.0),
+        mid_over_pmax_margin=physics_cfg.get('mid_over_pmax_margin', 0.75),
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -135,6 +154,7 @@ if __name__ == "__main__":
         log_target_min=cfg['training']['log_target_min'],
         log_target_max=cfg['training']['log_target_max'],
         timestamp=timestamp,
+        pmax_feature_index=pmax_feature_index,
     )
 
     dt_cfg = cfg.get('decoupled_training', {})
@@ -157,6 +177,7 @@ if __name__ == "__main__":
             log_target_min=cfg['training']['log_target_min'],
             log_target_max=cfg['training']['log_target_max'],
             timestamp=timestamp,
+            pmax_feature_index=pmax_feature_index,
         )
     elif dt_cfg.get('enabled', False):
         logger.info("\n[Stage 2] Skipped — FDS is disabled in model config.")
