@@ -232,25 +232,16 @@ if __name__ == "__main__":
         train_data = json.load(open(data_files, "r"))
         all_raw.extend(train_data)
 
-    # Filter to [1e-8, 1e-2]
-    pc_low, pc_high = 1e-8, 1e-2
-    filtered_raw = []
-    for unit in all_raw:
-        pc = float(unit.get("pc_gt", 0))
-        if pc_low <= pc <= pc_high:
-            filtered_raw.append(unit)
-    print(f"Filtered to Pc in [1e-8, 1e-2]: {len(filtered_raw)}/{len(all_raw)} records kept")
-
     seen = set()
     deduped_raw = []
-    for unit in filtered_raw:
+    for unit in all_raw:
         key = _dedup_key(unit)
         if key not in seen:
             seen.add(key)
             deduped_raw.append(unit)
 
-    print(f"Total records: {len(filtered_raw)}, after deduplication: {len(deduped_raw)} "
-          f"({len(filtered_raw) - len(deduped_raw)} duplicates removed)")
+    print(f"Total records: {len(all_raw)}, after deduplication: {len(deduped_raw)} "
+          f"({len(all_raw) - len(deduped_raw)} duplicates removed)")
 
     all_features, all_labels = feature_generator_iterater(deduped_raw)
 
