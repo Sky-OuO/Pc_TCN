@@ -75,6 +75,7 @@ if __name__ == "__main__":
         lds_sigma=lds_cfg.get('sigma', 2),
         log_min=log_target_min,
         log_max=log_target_max,
+        lds_power=lds_cfg.get('power', 1.0),
     )
     train_dataset = SatelliteCollisionDataset(
         train_features, train_labels, seq_length=cfg['data']['seq_length'])
