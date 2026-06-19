@@ -56,7 +56,7 @@ def compute_global_metrics(log_preds, log_gts):
 def compute_breakdown(log_preds, log_gts, global_sigma):
     signed  = log_preds - log_gts
     errors  = np.abs(signed)
-    decades = [(-10, -8), (-8, -6), (-6, -5), (-5, -4), (-4, -3), (-3, -2), (-2, 0)]
+    decades = [(-8, -6), (-6, -5), (-5, -4), (-4, -3), (-3, -2), (-2, 0)]
     rows = []
     for low, high in decades:
         mask  = (log_gts >= low) & (log_gts < high)
@@ -128,7 +128,7 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp='')
     ax2 = fig.add_subplot(gs[0, 1])
 
     # Scatter: pred vs gt
-    lims    = [-10, 0]
+    lims    = [-8, 0]
     scatter = ax.scatter(log_gts, log_preds, c=log10_errors, cmap='RdYlGn_r',
                          alpha=0.6, s=12, vmin=0, vmax=3)
     ax.plot(lims, lims,                        'r--', linewidth=1,   label='Perfect')
