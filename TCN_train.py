@@ -2,7 +2,7 @@ import json
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
@@ -75,7 +75,6 @@ if __name__ == "__main__":
         lds_sigma=lds_cfg.get('sigma', 2),
         log_min=log_target_min,
         log_max=log_target_max,
-        lds_power=lds_cfg.get('power', 1.0),
     )
     train_dataset = SatelliteCollisionDataset(
         train_features, train_labels, seq_length=cfg['data']['seq_length'])
@@ -136,10 +135,9 @@ if __name__ == "__main__":
         start_factor=cfg['scheduler']['warmup_start_factor'],
         total_iters=cfg['scheduler']['warmup_total_iters'],
     )
-    cosine_scheduler = CosineAnnealingWarmRestarts(
+    cosine_scheduler = CosineAnnealingLR(
         optimizer,
-        T_0=cfg['scheduler']['cosine_T_0'],
-        T_mult=cfg['scheduler']['cosine_T_mult'],
+        T_max=cfg['scheduler']['cosine_T_max'],
         eta_min=cfg['scheduler']['cosine_eta_min'],
     )
     scheduler = SequentialLR(

@@ -1,4 +1,16 @@
 {
+    "bin_capping": {
+        "enabled": true,
+        "bins": [
+            {"low": 1e-10, "high": 1e-8,  "max": null},
+            {"low": 1e-8,  "high": 1e-6,  "max": null},
+            {"low": 1e-6,  "high": 1e-5,  "max": 1500},
+            {"low": 1e-5,  "high": 1e-4,  "max": 1500},
+            {"low": 1e-4,  "high": 1e-3,  "max": null},
+            {"low": 1e-3,  "high": 1e-2,  "max": null},
+            {"low": 1e-2,  "high": 1,   "max": null}
+        ]
+    },
     "data": {
         "feature_path": "params/features.npy",
         "label_path": "params/labels.npy",
@@ -7,9 +19,9 @@
         "seq_length": 601
     },
     "model": {
-        "num_channels": [64, 128, 128, 256, 256],
+        "num_channels": [48, 96, 96, 192, 192],
         "kernel_size": 5,
-        "dropout": 0.2
+        "dropout": 0.35
     },
     "loss": {
         "type": "asymmetric_berhu",
@@ -43,19 +55,19 @@
     "training": {
         "num_epochs": 300,
         "batch_size": 32,
+        
         "patience": 120,
         "log_target_min": -9.0,
         "log_target_max": -0.3
     },
     "optimizer": {
-        "lr": 1e-3,
-        "weight_decay": 1e-4
+        "lr": 3e-3,
+        "weight_decay": 3e-4
     },
     "scheduler": {
         "warmup_start_factor": 0.01,
         "warmup_total_iters": 10,
-        "cosine_T_0": 50,
-        "cosine_T_mult": 2,
+        "cosine_T_max": 290,
         "cosine_eta_min": 1e-6,
         "milestone": 10
     },
@@ -85,8 +97,7 @@
         "num_bins": 100,
         "kernel": "gaussian",
         "ks": 3,
-        "sigma": 0.5,
-        "power": 3.0
+        "sigma": 0.5
     },
     "regression_head": {
         "dims": [256, 128, 64]
@@ -102,7 +113,7 @@
     "data_collection": {
         "tle_filter": {
             "enabled": true,
-            "pc_low": 5e-5,
+            "pc_low": 6e-5,
             "pc_high": 5e-3
         }
     }
