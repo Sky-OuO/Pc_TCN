@@ -33,10 +33,9 @@ class SatelliteCollisionDataset(Dataset):
         return features_tensor, label_tensor, self.sample_weights[idx]
 
 
-
 def compute_lds_weights(labels, num_bins=100, lds_kernel='gaussian', lds_ks=5, lds_sigma=2,
                         log_min=-10.0, log_max=0.0):
-    
+
     log_labels = np.log10(np.maximum(labels, 1e-10))
     bin_edges           = np.linspace(log_min, log_max, num_bins + 1)
     bin_index_per_label = np.clip(np.digitize(log_labels, bin_edges) - 1, 0, num_bins - 1)
@@ -50,6 +49,7 @@ def compute_lds_weights(labels, num_bins=100, lds_kernel='gaussian', lds_ks=5, l
 
     eff_num_per_label = np.array([eff_label_dist[b] for b in bin_index_per_label], dtype=np.float32)
     weights = np.where(eff_num_per_label > 0, 1.0 / eff_num_per_label, 0.0).astype(np.float32)
+    weights = np.clip(weights, 0.0, 10.0)
     if weights.mean() > 0:
         weights /= weights.mean()
     return weights

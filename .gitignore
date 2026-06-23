@@ -3,4 +3,5 @@ params/
 figures/
 __pycache__/
 .vscode/
-mypbs_sub.txt
+training_qsub.txt
+data_collection_qsub.txt

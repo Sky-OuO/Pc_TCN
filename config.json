@@ -1,20 +1,30 @@
 {
+    "bin_capping": {
+        "enabled": true,
+        "bins": [
+            {"low": 1e-10, "high": 1e-8,  "max": null},
+            {"low": 1e-8,  "high": 1e-6,  "max": null},
+            {"low": 1e-6,  "high": 1e-5,  "max": 1500},
+            {"low": 1e-5,  "high": 1e-4,  "max": 1500},
+            {"low": 1e-4,  "high": 1e-3,  "max": null},
+            {"low": 1e-3,  "high": 1e-2,  "max": null},
+            {"low": 1e-2,  "high": 1,   "max": null}
+        ]
+    },
     "data": {
         "feature_path": "params/features.npy",
         "label_path": "params/labels.npy",
         "test_size": 0.2,
         "random_state": 42,
-        "seq_length": 601
+        "seq_length": 121
     },
     "model": {
-        "num_channels": [64, 128, 128, 256, 256],
+        "num_channels": [48, 96, 96, 192, 192],
         "kernel_size": 5,
-        "dropout": 0.2
+        "dropout": 0.35
     },
     "loss": {
-        "type": "asymmetric_berhu",
         "delta": 1.0,
-        "alpha": 1.5,
         "high_pc_threshold": -3.0,
         "alpha_high": 2.5,
         "lambda_mse": 0.15,
@@ -24,6 +34,22 @@
         "lambda_high_bias": 0.5,
         "high_bias_min_count": 4
     },
+    "physics_proxy": {
+        "enabled": true,
+        "expected_raw_feature_dim": 30,
+        "pmax_feature_index": 15,
+        "lambda_pmax": 0.05,
+        "pmax_margin": 1.0,
+        "lambda_pmax_recall": 0.5,
+        "pmax_recall_threshold": -2.0,
+        "pmax_recall_temperature": 0.5,
+        "pmax_recall_tolerance": 0.25,
+        "lambda_mid_over": 0.3,
+        "mid_over_low": -6.0,
+        "mid_over_high": -4.0,
+        "mid_over_target_margin": 1.0,
+        "mid_over_pmax_margin": 0.75
+    },
     "training": {
         "num_epochs": 300,
         "batch_size": 32,
@@ -32,19 +58,15 @@
         "log_target_max": -0.3
     },
     "optimizer": {
-        "lr": 1e-3,
-        "weight_decay": 1e-4
+        "lr": 3e-3,
+        "weight_decay": 3e-4
     },
     "scheduler": {
         "warmup_start_factor": 0.01,
         "warmup_total_iters": 10,
-        "cosine_T_0": 50,
-        "cosine_T_mult": 2,
+        "cosine_T_max": 290,
         "cosine_eta_min": 1e-6,
         "milestone": 10
-    },
-    "sampler": {
-        "bin_edges": [-10, -8, -6, -5, -4, -3, -2, -1, 0]
     },
     "uncertainty_encoder": {
         "d_model": 32,
@@ -59,8 +81,8 @@
     "fds": {
         "enabled": true,
         "bucket_num": 60,
-        "ks": 5,
-        "sigma": 1.0,
+        "ks": 3,
+        "sigma": 0.5,
         "momentum": 0.9,
         "start_update": 50,
         "start_smooth": 80
@@ -85,7 +107,7 @@
     "data_collection": {
         "tle_filter": {
             "enabled": true,
-            "pc_low": 5e-5,
+            "pc_low": 6e-5,
             "pc_high": 5e-3
         }
     }

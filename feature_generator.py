@@ -12,7 +12,7 @@ if not os.path.exists("params"):
     os.makedirs("params", exist_ok=True)
 if not os.path.exists("figures"):
     os.makedirs("figures", exist_ok=True)
-
+cfg = json.load(open("config.json"))
 def _parse_launch_year(intldesg):
     try:
         yy = int(intldesg.strip()[:2])
@@ -52,9 +52,34 @@ def _build_uncertainty_features(sat, tle_age_days, tca_time, name=None):
         math.log(abs(bstar) + EPS),
         math.log(max(tau + 1.0, EPS)),
     ]
-    phase = (_debris_phase(_compute_launch_age_years(sat.intldesg, tca_time))
+    phase = (_debris_phase(_compute_launch_age_years(sat.intldesg, tca_time),
+                           a=cfg['debris_phase']['threshold_a_years'],
+                           b=cfg['debris_phase']['threshold_b_years'])
              if _is_debris_by_name(name) else [0, 0, 0])
     return raw_features + phase
+
+def _encounter_plane_distance(r_rel, v_rel):
+    speed = np.linalg.norm(v_rel)
+    if speed <= 1e-10:
+        return np.linalg.norm(r_rel)
+    v_hat = v_rel / speed
+    r_plane = r_rel - np.dot(r_rel, v_hat) * v_hat
+    return np.linalg.norm(r_plane)
+
+def _max_pc_proxy_log10(d_enc_km):
+    eps = 1e-12
+    d = max(float(d_enc_km), eps)
+    radii_km = [0.005, 0.01, 0.025, 0.05]
+    aspect_ratios = [1.0, 5.0, 15.0]
+    sigma_x_values = np.logspace(-3, 3, 49)
+    pmax = eps
+    for rc in radii_km:
+        for ar in aspect_ratios:
+            sigma_y_values = sigma_x_values / ar
+            pc_values = (rc ** 2 / (2.0 * sigma_x_values * sigma_y_values)) * \
+                        np.exp(-0.5 * (d / sigma_x_values) ** 2)
+            pmax = max(pmax, float(np.max(pc_values)))
+    return math.log10(min(max(pmax, eps), 1.0))
 
 class Feature_Generator:
     def __init__(self, tle_line1, tle_line2, tle_line3, tle_line4, tca_time,
@@ -78,7 +103,7 @@ class Feature_Generator:
         distance = math.sqrt((r1[0]-r2[0])**2 + (r1[1]-r2[1])**2 + (r1[2]-r2[2])**2)
         return distance
     
-    def generate_tca_centered_data(self, delta_t_minutes=5, time_step_seconds=1):
+    def generate_tca_centered_data(self, delta_t_minutes=60, time_step_seconds=60):
         start_time = self.tca_time - 2*timedelta(minutes=delta_t_minutes)
         end_time = self.tca_time
         positions = []
@@ -131,6 +156,8 @@ class Feature_Generator:
             v1_mag = np.linalg.norm(v1)
             r2_mag = np.linalg.norm(r2)
             v2_mag = np.linalg.norm(v2)
+            d_enc = _encounter_plane_distance(r_rel, v_rel)
+            log_pmax_proxy = _max_pc_proxy_log10(d_enc)
 
             features.append([
                 distance,           # relative distance  
@@ -143,13 +170,15 @@ class Feature_Generator:
                 v1_mag,             # sat1 orbit velocity
                 r2_mag,             # sat2 orbit radius
                 v2_mag,             # sat2 orbit velocity
+                d_enc,              # encounter-plane miss distance
+                log_pmax_proxy,     # max Pc proxy from radius/aspect-ratio scan
                 *unc1,              # obj1 uncertainty features (7-dim: 4 raw + 3 phase)
                 *unc2,              # obj2 uncertainty features (7-dim: 4 raw + 3 phase)
             ])
         
         return np.array(features) 
 
-def feature_generator_iterater(train_data):
+def feature_generator_iterater(train_data, delta_t_minutes=60, time_step_seconds=60):
     features = []
     labels = []
     for unit in tqdm(train_data):
@@ -167,7 +196,7 @@ def feature_generator_iterater(train_data):
         Feature_generator = Feature_Generator(tle_1_line1, tle_1_line2, tle_2_line1, tle_2_line2, tca_time,
                                               sat_1_name, sat_2_name)
 
-        positions, velocities, times = Feature_generator.generate_tca_centered_data(delta_t_minutes=25, time_step_seconds=10)
+        positions, velocities, times = Feature_generator.generate_tca_centered_data(delta_t_minutes=delta_t_minutes, time_step_seconds=time_step_seconds)
         unit_features = Feature_generator.calculate_relative_features(positions, velocities, times)
         features.append(unit_features)
         labels.append(float(pc_gt))
@@ -216,7 +245,33 @@ if __name__ == "__main__":
     print(f"Total records: {len(all_raw)}, after deduplication: {len(deduped_raw)} "
           f"({len(all_raw) - len(deduped_raw)} duplicates removed)")
 
-    all_features, all_labels = feature_generator_iterater(deduped_raw)
+    # Load config for all params
+    cfg = json.load(open("config.json"))
+
+    # Bin capping: limit dominant regimes for class balance
+    bin_cap_cfg = cfg.get("bin_capping", {})
+    if bin_cap_cfg.get("enabled", False):
+        np.random.seed(bin_cap_cfg.get("random_state", 42))
+        capped_raw = []
+        for bc in bin_cap_cfg.get("bins", []):
+            lo, hi, cap = bc["low"], bc["high"], bc.get("max")
+            bin_samples = [u for u in deduped_raw if lo <= float(u.get("pc_gt", 0)) <= hi]
+            count = len(bin_samples)
+            if cap is not None and count > cap:
+                bin_samples = np.random.choice(bin_samples, size=cap, replace=False).tolist()
+                print(f"  [{lo:.0e}, {hi:.0e}]: capped {count} → {cap}")
+            else:
+                print(f"  [{lo:.0e}, {hi:.0e}]: {count} (no cap)")
+            capped_raw.extend(bin_samples)
+        deduped_raw = capped_raw
+        print(f"After bin capping: {len(deduped_raw)} samples")
+
+    gen_cfg = cfg.get("feature_generation", {})
+    all_features, all_labels = feature_generator_iterater(
+        deduped_raw,
+        delta_t_minutes=gen_cfg.get("delta_t_minutes", 60),
+        time_step_seconds=gen_cfg.get("time_step_seconds", 60),
+    )
 
     feature_path = "params/features.npy"
     np.save(feature_path, all_features)
