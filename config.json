@@ -16,7 +16,7 @@
         "label_path": "params/labels.npy",
         "test_size": 0.2,
         "random_state": 42,
-        "seq_length": 601
+        "seq_length": 121
     },
     "model": {
         "num_channels": [48, 96, 96, 192, 192],
@@ -24,9 +24,7 @@
         "dropout": 0.35
     },
     "loss": {
-        "type": "asymmetric_berhu",
         "delta": 1.0,
-        "alpha": 1.5,
         "high_pc_threshold": -3.0,
         "alpha_high": 2.5,
         "lambda_mse": 0.15,
@@ -55,7 +53,6 @@
     "training": {
         "num_epochs": 300,
         "batch_size": 32,
-        
         "patience": 120,
         "log_target_min": -9.0,
         "log_target_max": -0.3
@@ -70,9 +67,6 @@
         "cosine_T_max": 290,
         "cosine_eta_min": 1e-6,
         "milestone": 10
-    },
-    "sampler": {
-        "bin_edges": [-10, -8, -6, -5, -4, -3, -2, -1, 0]
     },
     "uncertainty_encoder": {
         "d_model": 32,

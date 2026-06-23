@@ -25,7 +25,7 @@ if __name__ == "__main__":
     if physics_cfg.get('enabled', False):
         raw_feature_dim = np.load(cfg['data']['feature_path'], mmap_mode='r').shape[2]
         if raw_feature_dim >= physics_cfg.get('expected_raw_feature_dim', 30):
-            pmax_feature_index = physics_cfg.get('pmax_feature_index', 27)
+            pmax_feature_index = physics_cfg.get('pmax_feature_index', 15)
             preserve_feature_indices = [pmax_feature_index]
         else:
             logger.info("[Physics Proxy] Skipped Pmax penalty: regenerate features to include Pmax proxy columns.")

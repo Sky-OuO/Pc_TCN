@@ -23,12 +23,11 @@ def normalize_features(features, train_indices, preserve_feature_indices=None):
             normalized[:, :, idx] = features[:, :, idx]
     return normalized
 
-
 def engineer_features(features):
-    raw_geo  = features[:, :, :-18]   # 14 geo features
-    raw_unc  = features[:, :, -18:]   # 18 uncertainty features (static, no diff)
+    raw_geo  = features[:, :, :-14]   # 16 geo features (distance → log_pmax_proxy)
+    raw_unc  = features[:, :, -14:]   # 14 uncertainty features (unc1[7] + unc2[7])
     diff_geo = np.diff(raw_geo, axis=1, prepend=raw_geo[:, :1, :])
-    return np.concatenate([raw_geo, diff_geo, raw_unc], axis=2)
+    return np.concatenate([raw_geo, diff_geo, raw_unc], axis=2)  # 46 total
 
 
 def load_data(feature_path, label_path, test_size=0.2, random_state=42,
