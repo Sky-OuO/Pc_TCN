@@ -16,7 +16,7 @@
         "dropout": 0.3
     },
     "loss": {
-        "delta": 1.0,
+        "delta": 0.5,
         "high_pc_threshold": -3.0,
         "alpha_high": 2.5
     },
