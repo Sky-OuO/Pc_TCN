@@ -89,12 +89,7 @@ if __name__ == "__main__":
     if fds_was_enabled:
         logger.info("[Stage 1] FDS temporarily disabled — backbone trains on raw features.")
 
-    loss_cfg  = cfg['loss']
-    criterion = AsymmetricBerhuLoss(
-        delta=loss_cfg.get('delta', 1.0),
-        high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
-        alpha_high=loss_cfg.get('alpha_high', 2.5),
-    )
+    criterion = torch.nn.MSELoss(reduction='none')
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

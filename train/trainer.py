@@ -39,8 +39,7 @@ def _train_one_epoch(model, train_loader, criterion, optimizer, device,
             log_outputs = model(batch_features, labels=bin_labels, epoch=epoch)
         else:
             log_outputs = model(batch_features)
-        loss_per_sample = criterion(
-            log_outputs, log_targets, reduction='none')
+        loss_per_sample = criterion(log_outputs, log_targets)
         loss            = (loss_per_sample * batch_weights).mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -63,7 +62,7 @@ def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10,
             log_targets     = torch.clamp(torch.log10(targets_clamped),
                                           min=log_target_min, max=log_target_max)
             log_outputs     = model(batch_features)
-            loss            = criterion(log_outputs, log_targets)
+            loss            = criterion(log_outputs, log_targets).mean()
             val_loss       += loss.item() * batch_features.size(0)
             all_log_preds.extend(log_outputs.cpu().numpy().flatten())
             all_log_targets.extend(log_targets.cpu().numpy().flatten())
