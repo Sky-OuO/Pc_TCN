@@ -167,7 +167,7 @@ class Feature_Generator:
                 *r_rel,             # relative position vector (3D)
                 *v_rel,             # relative velocity vector (3D)
                 r1_mag,             # sat1 orbit radius
-                v1_mag,             # sat1 orbit velocity
+                v1_mag,             # sat1 orbit velocity 
                 r2_mag,             # sat2 orbit radius
                 v2_mag,             # sat2 orbit velocity
                 d_enc,              # encounter-plane miss distance
@@ -245,32 +245,14 @@ if __name__ == "__main__":
     print(f"Total records: {len(all_raw)}, after deduplication: {len(deduped_raw)} "
           f"({len(all_raw) - len(deduped_raw)} duplicates removed)")
 
-    # Load config for all params
+    # Load config for params
     cfg = json.load(open("config.json"))
-
-    # Bin capping: limit dominant regimes for class balance
-    bin_cap_cfg = cfg.get("bin_capping", {})
-    if bin_cap_cfg.get("enabled", False):
-        np.random.seed(bin_cap_cfg.get("random_state", 42))
-        capped_raw = []
-        for bc in bin_cap_cfg.get("bins", []):
-            lo, hi, cap = bc["low"], bc["high"], bc.get("max")
-            bin_samples = [u for u in deduped_raw if lo <= float(u.get("pc_gt", 0)) <= hi]
-            count = len(bin_samples)
-            if cap is not None and count > cap:
-                bin_samples = np.random.choice(bin_samples, size=cap, replace=False).tolist()
-                print(f"  [{lo:.0e}, {hi:.0e}]: capped {count} → {cap}")
-            else:
-                print(f"  [{lo:.0e}, {hi:.0e}]: {count} (no cap)")
-            capped_raw.extend(bin_samples)
-        deduped_raw = capped_raw
-        print(f"After bin capping: {len(deduped_raw)} samples")
 
     gen_cfg = cfg.get("feature_generation", {})
     all_features, all_labels = feature_generator_iterater(
         deduped_raw,
-        delta_t_minutes=gen_cfg.get("delta_t_minutes", 60),
-        time_step_seconds=gen_cfg.get("time_step_seconds", 60),
+        delta_t_minutes=gen_cfg.get("delta_t_minutes", 30),
+        time_step_seconds=gen_cfg.get("time_step_seconds", 10),
     )
 
     feature_path = "params/features.npy"

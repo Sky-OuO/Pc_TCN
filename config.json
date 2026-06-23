@@ -1,15 +1,7 @@
 {
-    "bin_capping": {
-        "enabled": true,
-        "bins": [
-            {"low": 1e-10, "high": 1e-8,  "max": null},
-            {"low": 1e-8,  "high": 1e-6,  "max": null},
-            {"low": 1e-6,  "high": 1e-5,  "max": 1500},
-            {"low": 1e-5,  "high": 1e-4,  "max": 1500},
-            {"low": 1e-4,  "high": 1e-3,  "max": null},
-            {"low": 1e-3,  "high": 1e-2,  "max": null},
-            {"low": 1e-2,  "high": 1,   "max": null}
-        ]
+    "feature_generation": {
+        "delta_t_minutes": 30,
+        "time_step_seconds": 10
     },
     "data": {
         "feature_path": "params/features.npy",
@@ -19,36 +11,14 @@
         "seq_length": 121
     },
     "model": {
-        "num_channels": [48, 96, 96, 192, 192],
+        "num_channels": [64, 128, 128, 256, 256],
         "kernel_size": 5,
-        "dropout": 0.35
+        "dropout": 0.3
     },
     "loss": {
         "delta": 1.0,
         "high_pc_threshold": -3.0,
-        "alpha_high": 2.5,
-        "lambda_mse": 0.15,
-        "mid_range_weight": 2.0,
-        "mid_low": -5.5,
-        "mid_high": -3.5,
-        "lambda_high_bias": 0.5,
-        "high_bias_min_count": 4
-    },
-    "physics_proxy": {
-        "enabled": true,
-        "expected_raw_feature_dim": 30,
-        "pmax_feature_index": 15,
-        "lambda_pmax": 0.05,
-        "pmax_margin": 1.0,
-        "lambda_pmax_recall": 0.5,
-        "pmax_recall_threshold": -2.0,
-        "pmax_recall_temperature": 0.5,
-        "pmax_recall_tolerance": 0.25,
-        "lambda_mid_over": 0.3,
-        "mid_over_low": -6.0,
-        "mid_over_high": -4.0,
-        "mid_over_target_margin": 1.0,
-        "mid_over_pmax_margin": 0.75
+        "alpha_high": 2.5
     },
     "training": {
         "num_epochs": 300,
@@ -62,11 +32,8 @@
         "weight_decay": 3e-4
     },
     "scheduler": {
-        "warmup_start_factor": 0.01,
-        "warmup_total_iters": 10,
         "cosine_T_max": 290,
-        "cosine_eta_min": 1e-6,
-        "milestone": 10
+        "cosine_eta_min": 1e-6
     },
     "uncertainty_encoder": {
         "d_model": 32,
@@ -107,7 +74,7 @@
     "data_collection": {
         "tle_filter": {
             "enabled": true,
-            "pc_low": 6e-5,
+            "pc_low": 1e-8,
             "pc_high": 5e-3
         }
     }

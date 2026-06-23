@@ -23,8 +23,7 @@ def _collect_features(model, dataset, device, batch_size=64, eps=1e-10):
 
 
 def _train_one_epoch(model, train_loader, criterion, optimizer, device,
-                     epoch=None, eps=1e-10, log_target_min=-9.0, log_target_max=-0.3,
-                     pmax_feature_index=None):
+                     epoch=None, eps=1e-10, log_target_min=-9.0, log_target_max=-0.3):
     model.train()
     train_loss = 0.0
     for batch_features, batch_labels, batch_weights in train_loader:
@@ -40,11 +39,8 @@ def _train_one_epoch(model, train_loader, criterion, optimizer, device,
             log_outputs = model(batch_features, labels=bin_labels, epoch=epoch)
         else:
             log_outputs = model(batch_features)
-        log_pmax_proxy = None
-        if pmax_feature_index is not None:
-            log_pmax_proxy = batch_features[:, -1, pmax_feature_index].unsqueeze(1)
         loss_per_sample = criterion(
-            log_outputs, log_targets, reduction='none', log_pmax_proxy=log_pmax_proxy)
+            log_outputs, log_targets, reduction='none')
         loss            = (loss_per_sample * batch_weights).mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -55,8 +51,7 @@ def _train_one_epoch(model, train_loader, criterion, optimizer, device,
 
 
 def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10,
-                        log_target_min=-9.0, log_target_max=-0.3,
-                        pmax_feature_index=None):
+                        log_target_min=-9.0, log_target_max=-0.3):
     model.eval()
     val_loss = 0.0
     all_log_preds, all_log_targets = [], []
@@ -68,10 +63,7 @@ def _validate_one_epoch(model, val_loader, criterion, device, eps=1e-10,
             log_targets     = torch.clamp(torch.log10(targets_clamped),
                                           min=log_target_min, max=log_target_max)
             log_outputs     = model(batch_features)
-            log_pmax_proxy = None
-            if pmax_feature_index is not None:
-                log_pmax_proxy = batch_features[:, -1, pmax_feature_index].unsqueeze(1)
-            loss            = criterion(log_outputs, log_targets, log_pmax_proxy=log_pmax_proxy)
+            loss            = criterion(log_outputs, log_targets)
             val_loss       += loss.item() * batch_features.size(0)
             all_log_preds.extend(log_outputs.cpu().numpy().flatten())
             all_log_targets.extend(log_targets.cpu().numpy().flatten())
@@ -96,8 +88,7 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
 # Stage 1: standard training of the entire model (backbone + head)
 def train_stage1(model, train_loader, val_loader, criterion, optimizer, scheduler,
                  num_epochs=300, device='cuda', patience=50,
-                 log_target_min=-9.0, log_target_max=-0.3, timestamp='',
-                 pmax_feature_index=None):
+                 log_target_min=-9.0, log_target_max=-0.3, timestamp=''):
 
     model.to(device)
     best_val_loss    = float('inf')
@@ -107,13 +98,11 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
 
     for epoch in range(num_epochs):
         train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device,
-                                      log_target_min=log_target_min, log_target_max=log_target_max,
-                                      pmax_feature_index=pmax_feature_index)
+                                      log_target_min=log_target_min, log_target_max=log_target_max)
 
         val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device,
                                                   log_target_min=log_target_min,
-                                                  log_target_max=log_target_max,
-                                                  pmax_feature_index=pmax_feature_index)
+                                                  log_target_max=log_target_max)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -149,8 +138,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
 def train_stage2(model, train_loader, val_loader, criterion, device,
                  stage2_epochs=100, stage2_lr=1e-4, stage2_patience=30,
                  fds_start_update=0, fds_start_smooth=5,
-                 log_target_min=-9.0, log_target_max=-0.3, timestamp='',
-                 pmax_feature_index=None):
+                 log_target_min=-9.0, log_target_max=-0.3, timestamp=''):
 
 
     model.to(device)
@@ -176,8 +164,7 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
     for epoch in range(stage2_epochs):
         train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device,
                                       epoch=epoch,
-                                      log_target_min=log_target_min, log_target_max=log_target_max,
-                                      pmax_feature_index=pmax_feature_index)
+                                      log_target_min=log_target_min, log_target_max=log_target_max)
 
         if getattr(model, 'use_fds', False) and epoch >= model.FDS.start_update:
             all_feats, all_bins = _collect_features(model, train_loader.dataset, device)
@@ -187,8 +174,7 @@ def train_stage2(model, train_loader, val_loader, criterion, device,
 
         val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device,
                                                  log_target_min=log_target_min,
-                                                 log_target_max=log_target_max,
-                                                 pmax_feature_index=pmax_feature_index)
+                                                 log_target_max=log_target_max)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)

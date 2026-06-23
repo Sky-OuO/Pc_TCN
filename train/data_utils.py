@@ -13,15 +13,11 @@ def split_indices(n, test_size=0.2, random_state=42):
     return train_test_split(indices, test_size=test_size, random_state=random_state)
 
 
-def normalize_features(features, train_indices, preserve_feature_indices=None):
+def normalize_features(features, train_indices):
     mean = np.mean(features[train_indices], axis=(0, 1))
     std  = np.std(features[train_indices],  axis=(0, 1))
     std[std == 0] = 1.0
-    normalized = (features - mean) / std
-    if preserve_feature_indices:
-        for idx in preserve_feature_indices:
-            normalized[:, :, idx] = features[:, :, idx]
-    return normalized
+    return (features - mean) / std
 
 def engineer_features(features):
     raw_geo  = features[:, :, :-14]   # 16 geo features (distance → log_pmax_proxy)
@@ -30,12 +26,11 @@ def engineer_features(features):
     return np.concatenate([raw_geo, diff_geo, raw_unc], axis=2)  # 46 total
 
 
-def load_data(feature_path, label_path, test_size=0.2, random_state=42,
-              preserve_feature_indices=None):
+def load_data(feature_path, label_path, test_size=0.2, random_state=42):
     features, labels             = load_raw_data(feature_path, label_path)
     train_indices, val_indices   = split_indices(len(features), test_size, random_state)
-    features                     = engineer_features(features)   # diff computed on raw scale
-    features                     = normalize_features(features, train_indices, preserve_feature_indices)
+    features                     = engineer_features(features)
+    features                     = normalize_features(features, train_indices)
     train_features, val_features = features[train_indices], features[val_indices]
     train_labels,   val_labels   = labels[train_indices],   labels[val_indices]
     return train_features, train_labels, val_features, val_labels
