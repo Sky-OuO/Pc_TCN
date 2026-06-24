@@ -92,6 +92,7 @@ if __name__ == "__main__":
         high_pc_threshold=cfg['loss'].get('high_pc_threshold', -3.0),
         alpha_high=cfg['loss'].get('alpha_high', 3.0),
     )
+    val_criterion = torch.nn.MSELoss()  # clean MSE for validation — no asymmetric penalty
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -99,12 +100,11 @@ if __name__ == "__main__":
         weight_decay=cfg['optimizer']['weight_decay'],
     )
     scheduler = ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10,
-        verbose=True,
-    )
+        optimizer, mode='min', factor=0.5, patience=10)
 
     trained_model = train_stage1(
-        model, train_loader, val_loader, criterion, optimizer, scheduler,
+        model, train_loader, val_loader, criterion, val_criterion,
+        optimizer, scheduler,
         num_epochs=cfg['training']['num_epochs'], device=device,
         patience=cfg['training']['patience'],
         timestamp=timestamp,
@@ -119,7 +119,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(f'params/best_model_{timestamp}.pth', map_location=device, weights_only=True),strict=False)
 
         train_stage2(
-            model, train_loader, val_loader, criterion,
+            model, train_loader, val_loader, criterion, val_criterion,
             optimizer, scheduler, device,
             stage2_epochs=dt_cfg.get('stage2_epochs', 100),
             stage2_patience=dt_cfg.get('stage2_patience', 30),

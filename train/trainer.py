@@ -77,7 +77,7 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
     plt.close()
 
 # Stage 1: standard training of the entire model (backbone + head)
-def train_stage1(model, train_loader, val_loader, criterion, optimizer, scheduler,
+def train_stage1(model, train_loader, val_loader, criterion, val_criterion, optimizer, scheduler,
                  num_epochs=200, device='cuda', patience=10, timestamp=''):
 
     model.to(device)
@@ -89,7 +89,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
     for epoch in range(num_epochs):
         train_loss = _train_one_epoch(model, train_loader, criterion, optimizer, device)
 
-        val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device)
+        val_loss, log_mae = _validate_one_epoch(model, val_loader, val_criterion, device)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -122,7 +122,7 @@ def train_stage1(model, train_loader, val_loader, criterion, optimizer, schedule
     return model
 
 # Stage 2: FDS smoothing applied only to the regression head (backbone frozen)
-def train_stage2(model, train_loader, val_loader, criterion, optimizer, scheduler, device,
+def train_stage2(model, train_loader, val_loader, criterion, val_criterion, optimizer, scheduler, device,
                  stage2_epochs=100, stage2_patience=10,
                  fds_start_update=0, fds_start_smooth=5, timestamp=''):
 
@@ -150,7 +150,7 @@ def train_stage2(model, train_loader, val_loader, criterion, optimizer, schedule
             model.FDS.update_running_stats(all_feats.to(device), all_bins.to(device), epoch)
             model.train()
 
-        val_loss, log_mae = _validate_one_epoch(model, val_loader, criterion, device)
+        val_loss, log_mae = _validate_one_epoch(model, val_loader, val_criterion, device)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)

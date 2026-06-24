@@ -17,7 +17,7 @@
     },
     "loss": {
         "high_pc_threshold": -3.0,
-        "alpha_high": 3.0
+        "alpha_high": 10.0
     },
     "training": {
         "num_epochs": 200,
@@ -27,8 +27,8 @@
         "log_target_max": -0.3
     },
     "optimizer": {
-        "lr": 1e-4,
-        "weight_decay": 1e-4
+        "lr": 1e-3,
+        "weight_decay": 3e-4
     },
     "scheduler": {
         "cosine_T_max": 290,
