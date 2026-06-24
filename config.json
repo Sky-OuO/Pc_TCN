@@ -16,20 +16,19 @@
         "dropout": 0.3
     },
     "loss": {
-        "delta": 0.5,
         "high_pc_threshold": -3.0,
-        "alpha_high": 2.5
+        "alpha_high": 3.0
     },
     "training": {
-        "num_epochs": 300,
+        "num_epochs": 200,
         "batch_size": 32,
-        "patience": 120,
+        "patience": 20,
         "log_target_min": -9.0,
         "log_target_max": -0.3
     },
     "optimizer": {
-        "lr": 3e-3,
-        "weight_decay": 3e-4
+        "lr": 1e-4,
+        "weight_decay": 1e-4
     },
     "scheduler": {
         "cosine_T_max": 290,
@@ -65,9 +64,9 @@
     },
     "decoupled_training": {
         "enabled": true,
-        "stage2_epochs": 150,
+        "stage2_epochs": 100,
         "stage2_lr": 1e-4,
-        "stage2_patience": 60,
+        "stage2_patience": 10,
         "fds_start_update": 0,
         "fds_start_smooth": 30
     },

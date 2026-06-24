@@ -1,12 +1,12 @@
 import json
 import torch
 import numpy as np
-from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset, compute_lds_weights
-from train.loss import AsymmetricBerhuLoss
+from train.loss import AsymmetricMSELoss
 from train.trainer import train_stage1, train_stage2
 from train.data_utils import load_data
 from train.evaluate import evaluate_best_model
@@ -27,6 +27,13 @@ if __name__ == "__main__":
     )
     logger.info(f"Train features shape: {train_features.shape}, Train labels shape: {train_labels.shape}")
     logger.info(f"Validation features shape: {val_features.shape}, Validation labels shape: {val_labels.shape}")
+
+    # All downstream code (dataset, loss, trainer, evaluate) receives log-space labels.
+    log_target_min = cfg['training']['log_target_min']
+    log_target_max = cfg['training']['log_target_max']
+    eps = 1e-10
+    train_labels = np.clip(np.log10(np.maximum(train_labels, eps)), log_target_min, log_target_max)
+    val_labels   = np.clip(np.log10(np.maximum(val_labels, eps)),   log_target_min, log_target_max)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Using device: {device}")
@@ -52,31 +59,23 @@ if __name__ == "__main__":
         'head_dims':        head_cfg.get('dims', None),
     }
     logger.info(f"config checkpoint: {cfg}")
-    lds_cfg       = cfg.get('lds', {})
-    log_target_min = cfg['training']['log_target_min']
-    log_target_max = cfg['training']['log_target_max']
+    lds_cfg = cfg.get('lds', {})
     train_weights = compute_lds_weights(
-        train_labels,
+        train_labels,  
         num_bins=lds_cfg.get('num_bins', 100),
         lds_kernel=lds_cfg.get('kernel', 'gaussian'),
         lds_ks=lds_cfg.get('ks', 5),
         lds_sigma=lds_cfg.get('sigma', 2),
-        log_min=log_target_min,
-        log_max=log_target_max,
     )
     train_dataset = SatelliteCollisionDataset(
-        train_features, train_labels, seq_length=cfg['data']['seq_length'])
-    val_dataset   = SatelliteCollisionDataset(
+        train_features, train_labels, seq_length=cfg['data']['seq_length'],
+        sample_weights=train_weights)
+    val_dataset = SatelliteCollisionDataset(
         val_features, val_labels, seq_length=cfg['data']['seq_length'])
 
-    # WeightedRandomSampler guarantees rare samples appear in every batch.
-    sampler = WeightedRandomSampler(
-        weights=train_weights.tolist(),
-        num_samples=len(train_weights),
-        replacement=True,
-    )
+    # LDS-weighted MSE: tail samples get higher loss weight directly.
     train_loader = DataLoader(
-        train_dataset, batch_size=cfg['training']['batch_size'], sampler=sampler)
+        train_dataset, batch_size=cfg['training']['batch_size'], shuffle=True)
     val_loader = DataLoader(
         val_dataset, batch_size=cfg['training']['batch_size'], shuffle=False)
 
@@ -89,11 +88,9 @@ if __name__ == "__main__":
     if fds_was_enabled:
         logger.info("[Stage 1] FDS temporarily disabled — backbone trains on raw features.")
 
-    loss_cfg  = cfg['loss']
-    criterion = AsymmetricBerhuLoss(
-        delta=loss_cfg.get('delta', 1.0),
-        high_pc_threshold=loss_cfg.get('high_pc_threshold', -2.0),
-        alpha_high=loss_cfg.get('alpha_high', 2.5),
+    criterion = AsymmetricMSELoss(
+        high_pc_threshold=cfg['loss'].get('high_pc_threshold', -3.0),
+        alpha_high=cfg['loss'].get('alpha_high', 3.0),
     )
 
     optimizer = torch.optim.AdamW(
@@ -101,18 +98,15 @@ if __name__ == "__main__":
         lr=cfg['optimizer']['lr'],
         weight_decay=cfg['optimizer']['weight_decay'],
     )
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=cfg['scheduler']['cosine_T_max'],
-        eta_min=cfg['scheduler']['cosine_eta_min'],
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=10,
+        verbose=True,
     )
 
     trained_model = train_stage1(
         model, train_loader, val_loader, criterion, optimizer, scheduler,
         num_epochs=cfg['training']['num_epochs'], device=device,
         patience=cfg['training']['patience'],
-        log_target_min=cfg['training']['log_target_min'],
-        log_target_max=cfg['training']['log_target_max'],
         timestamp=timestamp,
     )
 
@@ -122,23 +116,18 @@ if __name__ == "__main__":
         logger.info("Starting Stage 2: decoupled head training with FDS")
         logger.info("="*60)
         # Load the best Stage 1 backbone weights before Stage 2
-        model.load_state_dict(torch.load(f'params/best_model_{timestamp}.pth',
-                                          map_location=device, weights_only=True),
-                                          strict=False)
-        
+        model.load_state_dict(torch.load(f'params/best_model_{timestamp}.pth', map_location=device, weights_only=True),strict=False)
+
         train_stage2(
-            model, train_loader, val_loader, criterion, device,
+            model, train_loader, val_loader, criterion,
+            optimizer, scheduler, device,
             stage2_epochs=dt_cfg.get('stage2_epochs', 100),
-            stage2_lr=dt_cfg.get('stage2_lr', 1e-4),
             stage2_patience=dt_cfg.get('stage2_patience', 30),
             fds_start_update=dt_cfg.get('fds_start_update', 0),
             fds_start_smooth=dt_cfg.get('fds_start_smooth', 5),
-            log_target_min=cfg['training']['log_target_min'],
-            log_target_max=cfg['training']['log_target_max'],
             timestamp=timestamp,
         )
     elif dt_cfg.get('enabled', False):
         logger.info("\n[Stage 2] Skipped — FDS is disabled in model config.")
 
-    evaluate_best_model(model_param, val_features, val_labels, device=device,
-                        seq_length=cfg['data']['seq_length'], timestamp=timestamp)
+    evaluate_best_model(model_param, val_features, val_labels, device=device, seq_length=cfg['data']['seq_length'], timestamp=timestamp)

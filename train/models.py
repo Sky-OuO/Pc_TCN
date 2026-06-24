@@ -352,7 +352,7 @@ class TCN(nn.Module):
         prev = out_channels
         _dropouts = [0.3] + [0.2] * (len(_head_dims) - 1)
         for dim, drop in zip(_head_dims, _dropouts):
-            head_layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.ReLU(), nn.Dropout(drop)]
+            head_layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
             prev = dim
         head_layers.append(nn.Linear(prev, 1))
         self.regression_head = nn.Sequential(*head_layers)

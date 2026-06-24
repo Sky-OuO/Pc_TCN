@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 from train.models import TCN
 from train.dataset import SatelliteCollisionDataset
 import os
-from datetime import datetime
 from logger import logger
 
 if not os.path.exists('logs'):
@@ -160,8 +159,8 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp='')
     ax2.axvline(x=mean_bias, color='orange', linestyle='-',  linewidth=2,
                 label=f'Bias={mean_bias:+.3f}')
     ax2.set_xlabel('Signed Log10 Error (orders of magnitude)', fontsize=scatter_fontsize)
-    ax2.set_ylabel('Count',                                    fontsize=scatter_fontsize)
-    ax2.set_title('Error Distribution (Signed)',               fontsize=title_fontsize)
+    ax2.set_ylabel('Count', fontsize=scatter_fontsize)
+    ax2.set_title('Error Distribution (Signed)', fontsize=title_fontsize)
     ax2.tick_params(axis='both', labelsize=tick_fontsize)
     ax2.legend(fontsize=legend_fontsize)
     ax2.grid(True, alpha=0.3)
@@ -206,14 +205,12 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp='')
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
                         seq_length=601, timestamp=''):
-    eps                        = 1e-10
-    model                      = load_best_model(model_param, device, timestamp=timestamp)
-    log_preds, all_gts         = run_inference(model, val_features, val_labels, device, seq_length)
-    log_gts                    = np.log10(np.maximum(all_gts, eps))
-    metrics                    = compute_global_metrics(log_preds, log_gts)
-    breakdown_rows             = compute_breakdown(log_preds, log_gts, metrics['sigma'])
+    model = load_best_model(model_param, device, timestamp=timestamp)
+    log_preds, log_gts = run_inference(model, val_features, val_labels, device, seq_length)
+    metrics = compute_global_metrics(log_preds, log_gts)
+    breakdown_rows = compute_breakdown(log_preds, log_gts, metrics['sigma'])
 
-    print_global_summary(metrics, len(all_gts))
+    print_global_summary(metrics, len(log_gts))
     print_breakdown(breakdown_rows)
 
     plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp=timestamp)
