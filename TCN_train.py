@@ -54,8 +54,6 @@ if __name__ == "__main__":
         'fds_ks':           fds_cfg.get('ks', 5),
         'fds_sigma':        fds_cfg.get('sigma', 2),
         'fds_momentum':     fds_cfg.get('momentum', 0.9),
-        'fds_start_update': fds_cfg.get('start_update', 0),
-        'fds_start_smooth': fds_cfg.get('start_smooth', 1),
         'head_dims':        head_cfg.get('dims', None),
     }
     logger.info(f"config checkpoint: {cfg}")
@@ -92,15 +90,18 @@ if __name__ == "__main__":
         high_pc_threshold=cfg['loss'].get('high_pc_threshold', -3.0),
         alpha_high=cfg['loss'].get('alpha_high', 3.0),
     )
-    val_criterion = torch.nn.MSELoss()  # clean MSE for validation — no asymmetric penalty
+
+    val_criterion = torch.nn.MSELoss()  
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg['optimizer']['lr'],
         weight_decay=cfg['optimizer']['weight_decay'],
     )
-    scheduler = ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10)
+    scheduler = ReduceLROnPlateau(optimizer, 
+                mode= cfg['scheduler'].get('mode', 'min'), 
+                factor=cfg['scheduler'].get('factor', 0.5), 
+                patience=cfg['scheduler'].get('patience', 10))
 
     trained_model = train_stage1(
         model, train_loader, val_loader, criterion, val_criterion,
@@ -121,10 +122,9 @@ if __name__ == "__main__":
         train_stage2(
             model, train_loader, val_loader, criterion, val_criterion,
             optimizer, scheduler, device,
-            stage2_epochs=dt_cfg.get('stage2_epochs', 100),
-            stage2_patience=dt_cfg.get('stage2_patience', 30),
+            stage2_epochs=dt_cfg.get('stage2_epochs', 50),
             fds_start_update=dt_cfg.get('fds_start_update', 0),
-            fds_start_smooth=dt_cfg.get('fds_start_smooth', 5),
+            fds_start_smooth=dt_cfg.get('fds_start_smooth', 20),
             timestamp=timestamp,
         )
     elif dt_cfg.get('enabled', False):

@@ -22,7 +22,7 @@
     "training": {
         "num_epochs": 200,
         "batch_size": 32,
-        "patience": 20,
+        "patience": 30,
         "log_target_min": -9.0,
         "log_target_max": -0.3
     },
@@ -31,8 +31,9 @@
         "weight_decay": 3e-4
     },
     "scheduler": {
-        "cosine_T_max": 290,
-        "cosine_eta_min": 1e-6
+        "mode": "min",
+        "factor": 0.5,
+        "patience": 10
     },
     "uncertainty_encoder": {
         "d_model": 32,
@@ -49,9 +50,7 @@
         "bucket_num": 60,
         "ks": 3,
         "sigma": 0.5,
-        "momentum": 0.9,
-        "start_update": 50,
-        "start_smooth": 80
+        "momentum": 0.9
     },
     "lds": {
         "num_bins": 100,
@@ -64,11 +63,9 @@
     },
     "decoupled_training": {
         "enabled": true,
-        "stage2_epochs": 100,
-        "stage2_lr": 1e-4,
-        "stage2_patience": 10,
+        "stage2_epochs": 50,
         "fds_start_update": 0,
-        "fds_start_smooth": 30
+        "fds_start_smooth": 20
     },
     "data_collection": {
         "tle_filter": {

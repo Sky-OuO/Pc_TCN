@@ -10,7 +10,7 @@ class AsymmetricMSELoss(nn.Module):
         self.alpha_high = alpha_high
 
     def forward(self, log_predictions, log_targets):
-        diff     = log_predictions - log_targets
+        diff = log_predictions - log_targets
         abs_diff = torch.abs(diff)
 
         # 1. Base MSE: quadratic for all errors
