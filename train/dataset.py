@@ -2,7 +2,24 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 from scipy.ndimage import convolve1d
-from train.models import get_lds_kernel_window
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal.windows import triang
+
+
+def get_lds_kernel_window(kernel='gaussian', ks=5, sigma=2):
+    assert kernel in ['gaussian', 'triang', 'laplace']
+    half_ks = (ks - 1) // 2
+    if kernel == 'gaussian':
+        base_kernel = [0.] * half_ks + [1.] + [0.] * half_ks
+        kw = gaussian_filter1d(base_kernel, sigma=sigma)
+        kernel_window = kw / max(kw)
+    elif kernel == 'triang':
+        kernel_window = triang(ks)
+    else:
+        laplace = lambda x: np.exp(-abs(x) / sigma) / (2. * sigma)
+        kw = list(map(laplace, np.arange(-half_ks, half_ks + 1)))
+        kernel_window = np.array(kw) / max(kw)
+    return np.array(kernel_window, dtype=np.float32)
 
 
 class SatelliteCollisionDataset(Dataset):

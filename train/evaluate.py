@@ -32,8 +32,8 @@ def run_inference(model, val_features, val_labels, device, seq_length=601):
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
-            log_prob = model(batch_features)
-            all_log_preds.extend(log_prob.cpu().numpy().flatten())
+            mixture, _, _, _ = model(batch_features)
+            all_log_preds.extend(mixture.cpu().numpy().flatten())
             all_gts.extend(batch_labels.numpy().flatten())
     return np.array(all_log_preds), np.array(all_gts)
 
