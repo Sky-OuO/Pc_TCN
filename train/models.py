@@ -152,10 +152,9 @@ class FiLM(nn.Module):
 
 
 class MoEHead(nn.Module):
-    """Mixture of Experts: two regression heads gated by a learned router."""
+    """Mixture of Experts: sigmoid gate outputs trust in expert_high ∈ [0,1]."""
     def __init__(self, feature_dim, head_dims, gate_dim=64):
         super().__init__()
-        # threshold logic lives in trainer.py (mask splitting + gate target)
 
         def _make_head():
             layers = []
@@ -170,11 +169,12 @@ class MoEHead(nn.Module):
         self.expert_low = _make_head()
         self.expert_high = _make_head()
 
+        # Gate sees: backbone features + both expert predictions
         self.gate = nn.Sequential(
-            nn.Linear(feature_dim, gate_dim),
+            nn.Linear(feature_dim + 2, gate_dim),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(gate_dim, 2),
+            nn.Linear(gate_dim, 1),
         )
 
         with torch.no_grad():
@@ -184,12 +184,10 @@ class MoEHead(nn.Module):
     def forward(self, features):
         pred_low = self.expert_low(features)       # (B, 1)
         pred_high = self.expert_high(features)      # (B, 1)
-
-        gate_logits = self.gate(features)            # (B, 2)
-        gate_probs = F.softmax(gate_logits, dim=-1)  # (B, 2)
-        
-        mixture = gate_probs[:, 0:1] * pred_low + gate_probs[:, 1:2] * pred_high
-        return mixture, pred_low, pred_high, gate_logits
+        # Gate sees features + expert outputs (detached to avoid circular grads)
+        gate_input = torch.cat([features, pred_low.detach(), pred_high.detach()], dim=-1)
+        gate = torch.sigmoid(self.gate(gate_input))  # (B, 1) ∈ [0,1]
+        return pred_low, pred_high, gate
 
 
 class TCN(nn.Module):
@@ -295,5 +293,5 @@ class TCN(nn.Module):
     def forward(self, x):
         # x: (batch, seq_len, total_features)
         features = self.extract_features(x)
-        mixture, pred_low, pred_high, gate_logits = self.moe_head(features)
-        return mixture, pred_low, pred_high, gate_logits
+        pred_low, pred_high, gate = self.moe_head(features)
+        return pred_low, pred_high, gate

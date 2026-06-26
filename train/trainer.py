@@ -6,7 +6,7 @@ from logger import logger
 
 
 def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, device,
-                     moe_threshold=-3.5, expert_lambda=0.5, gate_lambda=0.1):
+                     moe_threshold=-3.5, moe_tau=0.5, expert_lambda=0.5, gate_lambda=0.1):
     model.train()
     train_loss = 0.0
 
@@ -17,9 +17,8 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
         log_targets = batch_labels
 
         optimizer.zero_grad()
-        mixture, pred_low, pred_high, gate_logits = model(batch_features)
+        pred_low, pred_high, gate = model(batch_features)
 
-        # Compute losses for low and high experts based on the gate threshold
         mask_low = (log_targets < moe_threshold).squeeze(-1)
         mask_high = (log_targets >= moe_threshold).squeeze(-1)
 
@@ -33,10 +32,14 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
             loss_high = (criterion(pred_high[mask_high], log_targets[mask_high])
                          * batch_weights[mask_high]).mean()
 
-        # Compute gate loss: encourage correct routing based on the threshold
-        gate_target = torch.where(log_targets.squeeze(-1) < moe_threshold, 0, 1).long()
-        loss_gate = gate_criterion(gate_logits, gate_target)
-        loss_mix = (criterion(mixture, log_targets) * batch_weights).mean()
+
+        learned_mix = (1.0 - gate) * pred_low + gate * pred_high
+        loss_mix = (criterion(learned_mix, log_targets) * batch_weights).mean()
+
+        with torch.no_grad():
+            gate_target = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
+        loss_gate = gate_criterion(gate, gate_target)
+
         loss = loss_mix + expert_lambda * (loss_low + loss_high) + gate_lambda * loss_gate
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -48,57 +51,55 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
 
 
 def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device):
-
     model.eval()
     val_loss = 0.0
-    all_log_preds, all_log_targets = [], []
+    mixture_preds, low_preds, high_preds, gate_vals, log_targets_all = [], [], [], [], []
     gate_correct, gate_total = 0, 0
+
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
             log_targets = batch_labels.to(device)
-            mixture, _, _, gate_logits = model(batch_features)
+            pred_low, pred_high, gate = model(batch_features)
+
+            mixture = (1.0 - gate) * pred_low + gate * pred_high
             loss = criterion(mixture, log_targets).mean()
             val_loss += loss.item() * batch_features.size(0)
-            all_log_preds.extend(mixture.cpu().numpy().flatten())
-            all_log_targets.extend(log_targets.cpu().numpy().flatten())
 
-            gate_target = (
-                log_targets.squeeze(-1)
-                >= moe_threshold
-            ).long()
-            gate_pred = gate_logits.argmax(dim=1)
-            gate_correct += (
-                gate_pred == gate_target
-            ).sum().item()
+            gate_pred = (gate >= 0.5).long().squeeze(-1)
+            gate_gt = (log_targets.squeeze(-1) >= moe_threshold).long()
+            gate_correct += (gate_pred == gate_gt).sum().item()
             gate_total += log_targets.size(0)
 
+            mixture_preds.append(mixture.cpu().numpy())
+            low_preds.append(pred_low.cpu().numpy())
+            high_preds.append(pred_high.cpu().numpy())
+            gate_vals.append(gate.cpu().numpy())
+            log_targets_all.append(log_targets.cpu().numpy())
+
+    mixture_preds = np.concatenate(mixture_preds).flatten()
+    low_preds = np.concatenate(low_preds).flatten()
+    high_preds = np.concatenate(high_preds).flatten()
+    gate_vals = np.concatenate(gate_vals).flatten()
+    log_targets = np.concatenate(log_targets_all).flatten()
     val_loss /= len(val_loader.dataset)
-    preds = np.array(all_log_preds)
-    targets = np.array(all_log_targets)
-
-    log_mae = np.mean(
-        np.abs(preds - targets)
-    )
     gate_acc = gate_correct / gate_total
-    # tail metrics
-    tail_mask = targets >= moe_threshold
-    if tail_mask.sum() > 0:
-        tail_mae = np.mean(
-            np.abs(
-                preds[tail_mask]
-                - targets[tail_mask]
-            )
-        )
-        tail_bias = np.mean(
-            preds[tail_mask]
-            - targets[tail_mask]
-        )
-    else:
-        tail_mae = np.nan
-        tail_bias = np.nan
 
-    return val_loss, log_mae, gate_acc, tail_mae, tail_bias
+    log_mae = np.mean(np.abs(mixture_preds - log_targets))
+
+    mask_low = log_targets < moe_threshold
+    mask_high = ~mask_low
+
+    low_exp_mae = (np.mean(np.abs(low_preds[mask_low] - log_targets[mask_low]))
+                   if mask_low.sum() > 0 else np.nan)
+    high_exp_mae = (np.mean(np.abs(high_preds[mask_high] - log_targets[mask_high]))
+                    if mask_high.sum() > 0 else np.nan)
+    tail_mae = (np.mean(np.abs(mixture_preds[mask_high] - log_targets[mask_high]))
+                if mask_high.sum() > 0 else np.nan)
+    tail_bias = (np.mean(mixture_preds[mask_high] - log_targets[mask_high])
+                 if mask_high.sum() > 0 else np.nan)
+
+    return val_loss, log_mae, gate_acc, tail_mae, tail_bias, low_exp_mae, high_exp_mae
 
 
 def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png'):
@@ -115,11 +116,11 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
 
 
 def train_model(model, train_loader, val_loader, criterion, val_criterion,
-                optimizer, scheduler, moe_threshold=-3.5, expert_lambda=0.5, gate_lambda=0.1,
+                optimizer, scheduler, moe_threshold=-3.5, moe_tau=0.3, expert_lambda=0.5, gate_lambda=0.1,
                 num_epochs=200, device='cuda', patience=10, timestamp=''):
 
     model.to(device)
-    gate_criterion = torch.nn.CrossEntropyLoss()
+    gate_criterion = torch.nn.BCELoss()
     best_val_loss = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
@@ -128,10 +129,10 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
     for epoch in range(num_epochs):
         train_loss = _train_one_epoch(
             model, train_loader, criterion, gate_criterion, optimizer, device,
-            moe_threshold=moe_threshold, expert_lambda=expert_lambda, gate_lambda=gate_lambda,
-        )
+            moe_threshold, moe_tau, expert_lambda, gate_lambda)
 
-        val_loss, log_mae, gate_acc, tail_mae, tail_bias = _validate_one_epoch(model, val_loader, val_criterion, moe_threshold, device)
+        val_loss, log_mae, gate_acc, tail_mae, tail_bias, low_exp_mae, high_exp_mae = _validate_one_epoch(
+            model, val_loader, val_criterion, moe_threshold, device)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -148,7 +149,9 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
 
         if (epoch + 1) % 10 == 0:
             logger.info(f'Epoch [{epoch+1}/{num_epochs}] lr={current_lr:.2e}')
-            logger.info(f'Train Loss: {train_loss:.6f}, VAL Loss: {val_loss:.6f}, Val MAE: {log_mae:.4f} orders, Gate Acc: {gate_acc:.4f}, Tail MAE: {tail_mae:.4f}, Tail Bias: {tail_bias:.4f}')
+            logger.info(f'Train: {train_loss:.6f} | Val: {val_loss:.6f} MAE={log_mae:.4f} GateAcc={gate_acc:.3f}')
+            logger.info(f'ExpMAE: low={low_exp_mae:.4f} high={high_exp_mae:.4f} | '
+                        f'Tail: MAE={tail_mae:.4f} bias={tail_bias:+.4f}')
             logger.info('-' * 50)
 
         if patience_counter >= patience:
