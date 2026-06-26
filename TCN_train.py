@@ -33,7 +33,7 @@ if __name__ == "__main__":
     log_target_max = cfg['training']['log_target_max']
     eps = 1e-10
     train_labels = np.clip(np.log10(np.maximum(train_labels, eps)), log_target_min, log_target_max)
-    val_labels   = np.clip(np.log10(np.maximum(val_labels, eps)),   log_target_min, log_target_max)
+    val_labels = np.clip(np.log10(np.maximum(val_labels, eps)),   log_target_min, log_target_max)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Using device: {device}")
@@ -93,16 +93,17 @@ if __name__ == "__main__":
         patience=cfg['scheduler'].get('patience', 10),
     )
 
-    trained_model = train_model(
-        model, train_loader, val_loader, criterion, val_criterion,
-        optimizer, scheduler,
-        moe_threshold=moe_cfg.get('threshold', -3.5),
-        expert_lambda=moe_cfg.get('expert_lambda', 0.5),
-        gate_lambda=moe_cfg.get('gate_lambda', 0.1),
-        num_epochs=cfg['training']['num_epochs'], device=device,
-        patience=cfg['training']['patience'],
-        timestamp=timestamp,
-    )
+    # trained_model = train_model(
+    #     model, train_loader, val_loader, criterion, val_criterion,
+    #     optimizer, scheduler,
+    #     moe_threshold=moe_cfg.get('threshold', -3.5),
+    #     expert_lambda=moe_cfg.get('expert_lambda', 0.5),
+    #     gate_lambda=moe_cfg.get('gate_lambda', 0.1),
+    #     num_epochs=cfg['training']['num_epochs'], device=device,
+    #     patience=cfg['training']['patience'],
+    #     timestamp=timestamp,
+    # )
 
     evaluate_best_model(model_param, val_features, val_labels, device=device,
-                        seq_length=cfg['data']['seq_length'], timestamp=timestamp)
+                        seq_length=cfg['data']['seq_length'], timestamp="20260625_171800",
+                        moe_threshold=moe_cfg.get('threshold', -3.5))

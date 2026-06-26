@@ -16,7 +16,7 @@
         "dropout": 0.3
     },
     "loss": {
-        "high_pc_threshold": -3.5,
+        "high_pc_threshold": -4,
         "alpha_high": 10.0
     },
     "training": {
