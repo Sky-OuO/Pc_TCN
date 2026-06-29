@@ -5,11 +5,55 @@ import matplotlib.pyplot as plt
 from logger import logger
 
 
-def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, device,
-                     moe_threshold=-3.5, moe_tau=0.1, gate_lambda=1.0):
-    model.train()
-    train_loss = 0.0
+# ═══════════════════════════════════════════════════════════════
+# Stage 1: train backbone + binary risk classifier
+# ═══════════════════════════════════════════════════════════════
 
+def _train_stage1_epoch(model, train_loader, cls_criterion, optimizer, device,
+                        risk_threshold=-4.0):
+    model.train()
+    total_loss = 0.0
+    for batch_features, batch_labels, _ in train_loader:
+        batch_features = batch_features.to(device)
+        log_targets = batch_labels.to(device)
+        risk_gt = (log_targets >= risk_threshold).float()  # (B, 1)
+
+        optimizer.zero_grad()
+        risk_logit, _, _ = model(batch_features)
+        loss = cls_criterion(risk_logit, risk_gt)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        total_loss += loss.item() * batch_features.size(0)
+    return total_loss / len(train_loader.dataset)
+
+
+def _validate_stage1(model, val_loader, cls_criterion, risk_threshold, device):
+    model.eval()
+    val_loss, correct, total = 0.0, 0, 0
+    with torch.no_grad():
+        for batch_features, batch_labels, _ in val_loader:
+            batch_features = batch_features.to(device)
+            log_targets = batch_labels.to(device)
+            risk_gt = (log_targets >= risk_threshold).float()
+            risk_logit, _, _ = model(batch_features)
+            loss = cls_criterion(risk_logit, risk_gt)
+            val_loss += loss.item() * batch_features.size(0)
+            risk_prob = torch.sigmoid(risk_logit)
+            pred = (risk_prob >= 0.5).float()
+            correct += (pred == risk_gt).sum().item()
+            total += risk_gt.size(0)
+    return val_loss / len(val_loader.dataset), correct / total
+
+
+# ═══════════════════════════════════════════════════════════════
+# Stage 2: train regression experts with oracle routing (classifier frozen)
+# ═══════════════════════════════════════════════════════════════
+
+def _train_stage2_epoch(model, train_loader, reg_criterion, optimizer, device,
+                        risk_threshold=-4.0):
+    model.train()
+    total_loss = 0.0
     for batch_features, batch_labels, batch_weights in train_loader:
         batch_features = batch_features.to(device)
         batch_labels = batch_labels.to(device)
@@ -17,86 +61,79 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
         log_targets = batch_labels
 
         optimizer.zero_grad()
-        pred_low, pred_high, gate = model(batch_features)
+        _, pred_low, pred_high = model(batch_features)
 
-        with torch.no_grad():
-            w_oracle = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
-            hard_low = (w_oracle < 0.5).squeeze(-1)
-            hard_high = ~hard_low
+        mask_low = (log_targets < risk_threshold).squeeze(-1)
+        mask_high = ~mask_low
 
-        loss_mix = torch.tensor(0.0, device=device)
-        if hard_low.any():
-            loss_mix += (criterion(pred_low[hard_low], log_targets[hard_low])
-                                     * batch_weights[hard_low]).mean()
-        if hard_high.any():
-            loss_mix += (criterion(pred_high[hard_high], log_targets[hard_high])
-                                      * batch_weights[hard_high]).mean()
+        loss = torch.tensor(0.0, device=device)
+        if mask_low.any():
+            loss = loss + (reg_criterion(pred_low[mask_low], log_targets[mask_low])
+                           * batch_weights[mask_low]).mean()
+        if mask_high.any():
+            loss = loss + (reg_criterion(pred_high[mask_high], log_targets[mask_high])
+                            * batch_weights[mask_high]).mean()
 
-        blend = (1.0 - gate) * pred_low + gate * pred_high
-        loss_blend = (criterion(blend, log_targets) * batch_weights).mean()
-        loss_gate = gate_criterion(gate, w_oracle)
-
-        loss = loss_mix + loss_blend + gate_lambda * loss_gate
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
-
-        train_loss += loss.item() * batch_features.size(0)
-
-    return train_loss / len(train_loader.dataset)
+        total_loss += loss.item() * batch_features.size(0)
+    return total_loss / len(train_loader.dataset)
 
 
-def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device):
+def _validate_regression(model, val_loader, val_criterion, risk_threshold, device):
+    """Validation uses frozen classifier for routing — no GT routing info."""
     model.eval()
-    val_loss = 0.0
-    mixture_preds, low_preds, high_preds, gate_vals, log_targets_all = [], [], [], [], []
-    gate_correct, gate_total = 0, 0
+    val_loss, correct, total = 0.0, 0, 0
+    all_preds, all_gts, all_low, all_high = [], [], [], []
 
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
             log_targets = batch_labels.to(device)
-            pred_low, pred_high, gate = model(batch_features)
+            risk_logit, pred_low, pred_high = model(batch_features)
 
-            mixture = (1.0 - gate) * pred_low + gate * pred_high
-            loss = criterion(mixture, log_targets).mean()
+            # Classifier-based routing (apply sigmoid to logit)
+            risk_prob = torch.sigmoid(risk_logit)
+            use_high = (risk_prob >= 0.5).squeeze(-1)
+            output = torch.where(use_high, pred_high.squeeze(-1), pred_low.squeeze(-1))
+
+            loss = val_criterion(output.unsqueeze(-1), log_targets)
             val_loss += loss.item() * batch_features.size(0)
 
-            gate_pred = (gate >= 0.5).long().squeeze(-1)
-            gate_gt = (log_targets.squeeze(-1) >= moe_threshold).long()
-            gate_correct += (gate_pred == gate_gt).sum().item()
-            gate_total += log_targets.size(0)
+            risk_gt = (log_targets >= risk_threshold).float()
+            pred_cls = (risk_prob >= 0.5).float()
+            correct += (pred_cls == risk_gt).sum().item()
+            total += risk_gt.size(0)
 
-            mixture_preds.append(mixture.cpu().numpy())
-            low_preds.append(pred_low.cpu().numpy())
-            high_preds.append(pred_high.cpu().numpy())
-            gate_vals.append(gate.cpu().numpy())
-            log_targets_all.append(log_targets.cpu().numpy())
+            all_preds.append(output.cpu().numpy())
+            all_gts.append(log_targets.cpu().numpy())
+            all_low.append(pred_low.cpu().numpy())
+            all_high.append(pred_high.cpu().numpy())
 
-    mixture_preds = np.concatenate(mixture_preds).flatten()
-    low_preds = np.concatenate(low_preds).flatten()
-    high_preds = np.concatenate(high_preds).flatten()
-    gate_vals = np.concatenate(gate_vals).flatten()
-    log_targets = np.concatenate(log_targets_all).flatten()
     val_loss /= len(val_loader.dataset)
-    gate_acc = gate_correct / gate_total
+    cls_acc = correct / total
 
-    log_mae = np.mean(np.abs(mixture_preds - log_targets))
+    preds = np.concatenate(all_preds).flatten()
+    gts = np.concatenate(all_gts).flatten()
+    lows = np.concatenate(all_low).flatten()
+    highs = np.concatenate(all_high).flatten()
 
-    mask_low = log_targets < moe_threshold
-    mask_high = ~mask_low
+    log_mae = np.mean(np.abs(preds - gts))
+    mask_high = gts >= risk_threshold
+    mask_low = ~mask_high
 
-    low_exp_mae = (np.mean(np.abs(low_preds[mask_low] - log_targets[mask_low]))
-                   if mask_low.sum() > 0 else np.nan)
-    high_exp_mae = (np.mean(np.abs(high_preds[mask_high] - log_targets[mask_high]))
-                    if mask_high.sum() > 0 else np.nan)
-    tail_mae = (np.mean(np.abs(mixture_preds[mask_high] - log_targets[mask_high]))
-                if mask_high.sum() > 0 else np.nan)
-    tail_bias = (np.mean(mixture_preds[mask_high] - log_targets[mask_high])
-                 if mask_high.sum() > 0 else np.nan)
+    tail_mae = np.mean(np.abs(preds[mask_high] - gts[mask_high])) if mask_high.sum() > 0 else np.nan
+    tail_bias = np.mean(preds[mask_high] - gts[mask_high]) if mask_high.sum() > 0 else np.nan
+    low_mae = np.mean(np.abs(lows[mask_low] - gts[mask_low])) if mask_low.sum() > 0 else np.nan
+    high_mae = np.mean(np.abs(highs[mask_high] - gts[mask_high])) if mask_high.sum() > 0 else np.nan
 
-    return val_loss, log_mae, gate_acc, tail_mae, tail_bias, low_exp_mae, high_exp_mae
+    return val_loss, log_mae, cls_acc, tail_mae, tail_bias, low_mae, high_mae
 
+
+# ═══════════════════════════════════════════════════════════════
+# Orchestration
+# ═══════════════════════════════════════════════════════════════
 
 def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png'):
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -111,29 +148,66 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
     plt.close()
 
 
-def train_model(model, train_loader, val_loader, criterion, val_criterion,
-                optimizer, scheduler, moe_threshold=-3.5, moe_tau=0.1, gate_lambda=1.0,
-                num_epochs=200, device='cuda', patience=10, timestamp=''):
+def train_model(model, train_loader, val_loader, reg_criterion, val_criterion,
+                optimizer, scheduler, risk_threshold=-4.0,
+                stage1_epochs=30, stage2_epochs=150,
+                device='cuda', patience=20, timestamp=''):
 
     model.to(device)
-    gate_criterion = torch.nn.BCELoss()
+
+    # Compute class weight from data: pos_weight = num_neg / num_pos
+    train_labels_np = train_loader.dataset.labels
+    num_pos = float((train_labels_np >= risk_threshold).sum())
+    num_neg = float((train_labels_np < risk_threshold).sum())
+    pos_weight_val = num_neg / max(num_pos, 1.0)
+    cls_criterion = torch.nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([pos_weight_val], device=device))
+    logger.info(f"Classifier pos_weight = {pos_weight_val:.1f} "
+                f"(neg={int(num_neg)}, pos={int(num_pos)})")
+
+    # ── Stage 1: train backbone + classifier ──
+    logger.info("\n" + "=" * 60)
+    logger.info("Stage 1: Training binary risk classifier")
+    logger.info("=" * 60)
+
+    best_acc = 0.0
+    for epoch in range(stage1_epochs):
+        train_loss = _train_stage1_epoch(model, train_loader, cls_criterion,
+                                         optimizer, device, risk_threshold)
+        val_loss, cls_acc = _validate_stage1(model, val_loader, cls_criterion,
+                                             risk_threshold, device)
+        scheduler.step(val_loss)
+
+        if cls_acc > best_acc:
+            best_acc = cls_acc
+
+        if (epoch + 1) % 5 == 0:
+            logger.info(f'[S1] Epoch {epoch+1}/{stage1_epochs} | '
+                        f'Train: {train_loss:.4f} Val: {val_loss:.4f} Acc: {cls_acc:.3f}')
+
+    logger.info(f"Stage 1 complete — best classifier accuracy: {best_acc:.3f}")
+
+    # ── Stage 2: freeze classifier, train regression experts ──
+    logger.info("\n" + "=" * 60)
+    logger.info("Stage 2: Training regression experts (classifier frozen)")
+    logger.info("=" * 60)
+
+    model.freeze_classifier()
     best_val_loss = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
     best_state = None
 
-    for epoch in range(num_epochs):
-        train_loss = _train_one_epoch(
-            model, train_loader, criterion, gate_criterion, optimizer, device,
-            moe_threshold, moe_tau, gate_lambda)
+    for epoch in range(stage2_epochs):
+        train_loss = _train_stage2_epoch(model, train_loader, reg_criterion,
+                                         optimizer, device, risk_threshold)
 
-        val_loss, log_mae, gate_acc, tail_mae, tail_bias, low_exp_mae, high_exp_mae = _validate_one_epoch(
-            model, val_loader, val_criterion, moe_threshold, device)
+        (val_loss, log_mae, cls_acc, tail_mae, tail_bias,
+         low_mae, high_mae) = _validate_regression(
+            model, val_loader, val_criterion, risk_threshold, device)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-
-        current_lr = optimizer.param_groups[0]['lr']
         scheduler.step(log_mae)
 
         if val_loss < best_val_loss:
@@ -144,9 +218,10 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
             patience_counter += 1
 
         if (epoch + 1) % 10 == 0:
-            logger.info(f'Epoch [{epoch+1}/{num_epochs}] lr={current_lr:.2e}')
-            logger.info(f'Train: {train_loss:.6f} | Val: {val_loss:.6f} MAE={log_mae:.4f} GateAcc={gate_acc:.3f}')
-            logger.info(f'ExpMAE: low={low_exp_mae:.4f} high={high_exp_mae:.4f} | '
+            current_lr = optimizer.param_groups[0]['lr']
+            logger.info(f'[S2] Epoch {epoch+1}/{stage2_epochs} lr={current_lr:.2e}')
+            logger.info(f'Train: {train_loss:.6f} | Val: {val_loss:.6f} MAE={log_mae:.4f} ClsAcc={cls_acc:.3f}')
+            logger.info(f'ExpMAE: low={low_mae:.4f} high={high_mae:.4f} | '
                         f'Tail: MAE={tail_mae:.4f} bias={tail_bias:+.4f}')
             logger.info('-' * 50)
 

@@ -151,43 +151,34 @@ class FiLM(nn.Module):
 
 
 
-class MoEHead(nn.Module):
-    """Mixture of Experts: sigmoid gate outputs trust in expert_high ∈ [0,1]."""
-    def __init__(self, feature_dim, head_dims, gate_dim=64):
+def _make_regression_head(feature_dim, head_dims, init_bias=-5.0):
+    """Factory: produces a regression head with the given architecture."""
+    layers = []
+    prev = feature_dim
+    _dropouts = [0.3] + [0.2] * (len(head_dims) - 1)
+    for dim, drop in zip(head_dims, _dropouts):
+        layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
+        prev = dim
+    layers.append(nn.Linear(prev, 1))
+    head = nn.Sequential(*layers)
+    with torch.no_grad():
+        head[-1].bias.fill_(init_bias)
+    return head
+
+
+class RiskClassifier(nn.Module):
+    """Binary classifier: predicts P(high_risk) from backbone features."""
+    def __init__(self, feature_dim, hidden_dim=64):
         super().__init__()
-
-        def _make_head():
-            layers = []
-            prev = feature_dim
-            _dropouts = [0.3] + [0.2] * (len(head_dims) - 1)
-            for dim, drop in zip(head_dims, _dropouts):
-                layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
-                prev = dim
-            layers.append(nn.Linear(prev, 1))
-            return nn.Sequential(*layers)
-
-        self.expert_low = _make_head()
-        self.expert_high = _make_head()
-
-        # Gate sees: backbone features + both expert predictions
-        self.gate = nn.Sequential(
-            nn.Linear(feature_dim + 2, gate_dim),
+        self.net = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(gate_dim, 1),
+            nn.Linear(hidden_dim, 1),
         )
 
-        with torch.no_grad():
-            self.expert_low[-1].bias.fill_(-5.0)
-            self.expert_high[-1].bias.fill_(-3.0)
-
     def forward(self, features):
-        pred_low = self.expert_low(features)       # (B, 1)
-        pred_high = self.expert_high(features)      # (B, 1)
-        # Gate sees features + expert outputs (detached to avoid circular grads)
-        gate_input = torch.cat([features, pred_low.detach(), pred_high.detach()], dim=-1)
-        gate = torch.sigmoid(self.gate(gate_input))  # (B, 1) ∈ [0,1]
-        return pred_low, pred_high, gate
+        return self.net(features)  # raw logit — BCEWithLogitsLoss applies sigmoid
 
 
 class TCN(nn.Module):
@@ -196,37 +187,29 @@ class TCN(nn.Module):
                  head_dims=None):
         super(TCN, self).__init__()
 
-        self.unc_feature_dim = 14   # 7-dim per object x 2 objects (4 raw + 3 phase)
+        self.unc_feature_dim = 14
         self.geo_feature_dim = input_size - self.unc_feature_dim
 
         self.unc_mlp = nn.Sequential(
-            nn.LayerNorm(4),
-            nn.Linear(4, 32),
-            nn.GELU(),
-            nn.Linear(32, 32),
-            nn.GELU(),
-            nn.Linear(32, 16),
-            nn.GELU(),
+            nn.LayerNorm(4), nn.Linear(4, 32), nn.GELU(),
+            nn.Linear(32, 32), nn.GELU(), nn.Linear(32, 16), nn.GELU(),
             nn.Linear(16, 8),
         )
 
         num_levels = len(num_channels)
-        split_idx  = num_levels // 2  # split point for multi-scale FiLM
+        split_idx  = num_levels // 2
         out_channels = num_channels[-1]
-        mid_channels = num_channels[split_idx - 1]  # channel dim at the split
+        mid_channels = num_channels[split_idx - 1]
 
-        # Stem + early TCN blocks
         stem = nn.Conv1d(self.geo_feature_dim, num_channels[0], 1)
         early_blocks = []
         for i in range(split_idx):
-            in_ch  = num_channels[i - 1] if i > 0 else num_channels[0]
+            in_ch = num_channels[i - 1] if i > 0 else num_channels[0]
             out_ch = num_channels[i]
             early_blocks.append(TCNBlock(in_ch, out_ch, kernel_size, 2 ** i, dropout))
-
-        # Late TCN blocks
         late_blocks = []
         for i in range(split_idx, num_levels):
-            in_ch  = num_channels[i - 1]
+            in_ch = num_channels[i - 1]
             out_ch = num_channels[i]
             late_blocks.append(TCNBlock(in_ch, out_ch, kernel_size, 2 ** i, dropout))
 
@@ -235,63 +218,42 @@ class TCN(nn.Module):
         self.temporal_pool = TemporalAttentionPooling(out_channels)
 
         self.uncertainty_encoder = CrossAttentionUncertaintyEncoder(
-            input_dim=15,  # 8 MLP + 4 raw residual + 3 phase
-            d_model=unc_d_model,
-            num_heads=unc_num_heads,
-            output_dim=out_channels,
-            dropout=unc_dropout,
-            num_layers=unc_num_layers,
+            input_dim=15, d_model=unc_d_model, num_heads=unc_num_heads,
+            output_dim=out_channels, dropout=unc_dropout, num_layers=unc_num_layers,
         )
-        # Mid-level FiLM: conditions intermediate geo features (seq) on uncertainty
         self.film_mid = FiLM(geo_dim=mid_channels, unc_dim=out_channels)
-        # Final FiLM: conditions pooled geo features on uncertainty
         self.film     = FiLM(geo_dim=out_channels,  unc_dim=out_channels)
 
-        # MoE regression heads: gate + expert_low + expert_high
         _head_dims = head_dims if head_dims is not None else [128, 64]
-        self.moe_head = MoEHead(
-            feature_dim=out_channels,
-            head_dims=_head_dims,
-        )
+        self.classifier = RiskClassifier(feature_dim=out_channels)
+        self.expert_low = _make_regression_head(out_channels, _head_dims, init_bias=-5.0)
+        self.expert_high = _make_regression_head(out_channels, _head_dims, init_bias=-3.0)
 
     def extract_features(self, x):
-        x_geo  = x[:, :, :-self.unc_feature_dim]     # (batch, seq_len, geo_dim)
-        x_unc1 = x[:, :, -self.unc_feature_dim:-7]   # (batch, seq_len, 7): raw(4)+phase(3)
-        x_unc2 = x[:, :, -7:]                         # (batch, seq_len, 7)
+        x_geo  = x[:, :, :-self.unc_feature_dim]
+        x_unc1 = x[:, :, -self.unc_feature_dim:-7]
+        x_unc2 = x[:, :, -7:]
+        raw_unc1, phase1 = x_unc1[:, :, :4], x_unc1[:, :, 4:]
+        raw_unc2, phase2 = x_unc2[:, :, :4], x_unc2[:, :, 4:]
+        emb1 = self.unc_mlp(raw_unc1)
+        emb2 = self.unc_mlp(raw_unc2)
+        unc1 = torch.cat([emb1, raw_unc1, phase1], dim=-1)
+        unc2 = torch.cat([emb2, raw_unc2, phase2], dim=-1)
+        fusion_unc = self.uncertainty_encoder(unc1, unc2)
+        x_geo = x_geo.transpose(1, 2)
+        out_early = self.network_early(x_geo)
+        out_early = self.film_mid(out_early, fusion_unc)
+        out_late = self.network_late(out_early)
+        out_geo = self.temporal_pool(out_late)
+        return self.film(out_geo, fusion_unc)
 
-        # Split raw uncertainty features (4-dim) from debris phase (3-dim)
-        raw_unc1 = x_unc1[:, :, :4]   # (batch, seq_len, 4)
-        phase1   = x_unc1[:, :, 4:]   # (batch, seq_len, 3)
-        raw_unc2 = x_unc2[:, :, :4]   # (batch, seq_len, 4)
-        phase2   = x_unc2[:, :, 4:]   # (batch, seq_len, 3)
-
-        # MLP transforms raw features → 8-dim embedding
-        emb1 = self.unc_mlp(raw_unc1)  # (batch, seq_len, 8)
-        emb2 = self.unc_mlp(raw_unc2)  # (batch, seq_len, 8)
-
-        # Residual: concatenate MLP embedding + raw features + debris phase → 15-dim
-        unc1 = torch.cat([emb1, raw_unc1, phase1], dim=-1)  # (batch, seq_len, 15)
-        unc2 = torch.cat([emb2, raw_unc2, phase2], dim=-1)  # (batch, seq_len, 15)
-
-        # Uncertainty encoder runs on 15-dim full sequence
-        fusion_unc = self.uncertainty_encoder(unc1, unc2)  # (batch, out_channels)
-
-        # Geo early path
-        x_geo     = x_geo.transpose(1, 2)                       # (batch, geo_dim, seq_len)
-        out_early  = self.network_early(x_geo)                   # (batch, mid_channels, seq_len)
-
-        # Mid-level FiLM: broadcast uncertainty over time dimension
-        out_early  = self.film_mid(out_early, fusion_unc)        # (batch, mid_channels, seq_len)
-
-        # Geo late path + temporal pooling
-        out_late   = self.network_late(out_early)                 # (batch, out_channels, seq_len)
-        out_geo    = self.temporal_pool(out_late)                 # (batch, out_channels)
-
-        # Final FiLM on pooled geo features
-        return self.film(out_geo, fusion_unc)                    # (batch, out_channels)
+    def freeze_classifier(self):
+        for p in self.classifier.parameters():
+            p.requires_grad = False
 
     def forward(self, x):
-        # x: (batch, seq_len, total_features)
         features = self.extract_features(x)
-        pred_low, pred_high, gate = self.moe_head(features)
-        return pred_low, pred_high, gate
+        risk_logit = self.classifier(features)  # raw logit — BCEWithLogitsLoss
+        pred_low = self.expert_low(features)
+        pred_high = self.expert_high(features)
+        return risk_logit, pred_low, pred_high

@@ -39,7 +39,6 @@ if __name__ == "__main__":
     logger.info(f"Using device: {device}")
 
     head_cfg = cfg.get('regression_head', {})
-    moe_cfg = cfg.get('moe', {})
     model_param = {
         'input_size':       train_features.shape[2],
         'num_channels':     cfg['model']['num_channels'],
@@ -75,9 +74,10 @@ if __name__ == "__main__":
     model = TCN(**model_param)
     logger.info(f"model parameters num: {sum(p.numel() for p in model.parameters()):,}")
 
-    criterion = AsymmetricMSELoss(
-        high_pc_threshold=cfg['loss'].get('high_pc_threshold', -3.0),
-        alpha_high=cfg['loss'].get('alpha_high', 3.0)
+    stage_cfg = cfg.get('stage', {})
+    reg_criterion = AsymmetricMSELoss(
+        high_pc_threshold=cfg['loss'].get('high_pc_threshold', -4.0),
+        alpha_high=cfg['loss'].get('alpha_high', 30.0),
     )
     val_criterion = torch.nn.MSELoss()
 
@@ -94,16 +94,16 @@ if __name__ == "__main__":
     )
 
     trained_model = train_model(
-        model, train_loader, val_loader, criterion, val_criterion,
+        model, train_loader, val_loader, reg_criterion, val_criterion,
         optimizer, scheduler,
-        moe_threshold=moe_cfg.get('threshold', -3.5),
-        moe_tau=moe_cfg.get('tau', 0.1),
-        gate_lambda=moe_cfg.get('gate_lambda', 1.0),
-        num_epochs=cfg['training']['num_epochs'], device=device,
+        risk_threshold=stage_cfg.get('risk_threshold', -4.0),
+        stage1_epochs=stage_cfg.get('stage1_epochs', 30),
+        stage2_epochs=stage_cfg.get('stage2_epochs', 150),
+        device=device,
         patience=cfg['training']['patience'],
         timestamp=timestamp,
     )
 
     evaluate_best_model(model_param, val_features, val_labels, device=device,
                         seq_length=cfg['data']['seq_length'], timestamp=timestamp,
-                        moe_threshold=moe_cfg.get('threshold', -3.5))
+                        risk_threshold=stage_cfg.get('risk_threshold', -4.0))

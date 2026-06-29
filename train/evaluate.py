@@ -28,19 +28,24 @@ def load_best_model(model_param, device, timestamp=''):
 def run_inference(model, val_features, val_labels, device, seq_length=601):
     val_dataset = SatelliteCollisionDataset(val_features, val_labels, seq_length=seq_length)
     val_loader  = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    all_mix, all_low, all_high, all_gate, all_gts = [], [], [], [], []
+    all_preds, all_low, all_high, all_risk, all_gts = [], [], [], [], []
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
-            pred_low, pred_high, gate = model(batch_features)
-            mixture = (1.0 - gate) * pred_low + gate * pred_high
-            all_mix.extend(mixture.cpu().numpy().flatten())
+            risk_logit, pred_low, pred_high = model(batch_features)
+
+            # Classifier-based hard routing (apply sigmoid to logit)
+            risk_prob = torch.sigmoid(risk_logit)
+            use_high = (risk_prob >= 0.5).squeeze(-1)
+            output = torch.where(use_high, pred_high.squeeze(-1), pred_low.squeeze(-1))
+
+            all_preds.extend(output.cpu().numpy().flatten())
             all_low.extend(pred_low.cpu().numpy().flatten())
             all_high.extend(pred_high.cpu().numpy().flatten())
-            all_gate.extend(gate.cpu().numpy().flatten())
+            all_risk.extend(risk_prob.cpu().numpy().flatten())
             all_gts.extend(batch_labels.numpy().flatten())
-    return (np.array(all_mix), np.array(all_low), np.array(all_high),
-            np.array(all_gate), np.array(all_gts))
+    return (np.array(all_preds), np.array(all_low), np.array(all_high),
+            np.array(all_risk), np.array(all_gts))
 
 
 def compute_global_metrics(log_preds, log_gts):
@@ -209,32 +214,30 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp='')
 
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
-                        seq_length=601, timestamp='', moe_threshold=-3.5):
-    
+                        seq_length=601, timestamp='', risk_threshold=-4.0):
+
     model = load_best_model(model_param, device, timestamp=timestamp)
-    log_preds, low_preds, high_preds, gate_vals, log_gts = run_inference(
+    preds, lows, highs, risk_probs, gts = run_inference(
         model, val_features, val_labels, device, seq_length)
 
-    metrics = compute_global_metrics(log_preds, log_gts)
-    breakdown_rows = compute_breakdown(log_preds, log_gts, metrics['sigma'])
+    metrics = compute_global_metrics(preds, gts)
+    breakdown_rows = compute_breakdown(preds, gts, metrics['sigma'])
 
-    print_global_summary(metrics, len(log_gts))
+    print_global_summary(metrics, len(gts))
     print_breakdown(breakdown_rows)
 
-    mask_low = log_gts < moe_threshold
-    mask_high = log_gts >= moe_threshold
+    mask_low = gts < risk_threshold
+    mask_high = ~mask_low
 
-    gate_low_region = float(np.mean(1.0 - gate_vals[mask_low])) if mask_low.sum() > 0 else float('nan')
-    gate_high_region = float(np.mean(gate_vals[mask_high])) if mask_high.sum() > 0 else float('nan')
-    low_exp_mae = float(np.mean(np.abs(low_preds[mask_low] - log_gts[mask_low]))) if mask_low.sum() > 0 else float('nan')
-    high_exp_mae = float(np.mean(np.abs(high_preds[mask_high] - log_gts[mask_high]))) if mask_high.sum() > 0 else float('nan')
+    cls_acc = float(np.mean((risk_probs >= 0.5) == mask_high)) if len(gts) > 0 else float('nan')
+    low_mae = float(np.mean(np.abs(lows[mask_low] - gts[mask_low]))) if mask_low.sum() > 0 else float('nan')
+    high_mae = float(np.mean(np.abs(highs[mask_high] - gts[mask_high]))) if mask_high.sum() > 0 else float('nan')
 
     logger.info(f"\n{'─'*50}")
-    logger.info(f"Gate & Expert Diagnostics (threshold={moe_threshold})")
+    logger.info(f"Classifier & Expert Diagnostics (threshold={risk_threshold})")
     logger.info(f"{'─'*50}")
-    logger.info(f"  Gate confidence (low region):  {gate_low_region:.4f}")
-    logger.info(f"  Gate confidence (high region): {gate_high_region:.4f}")
-    logger.info(f"  Expert_low MAE (low region):   {low_exp_mae:.4f} orders")
-    logger.info(f"  Expert_high MAE (high region): {high_exp_mae:.4f} orders")
+    logger.info(f"  Classifier accuracy: {cls_acc:.4f}")
+    logger.info(f"  Expert_low MAE (low region):   {low_mae:.4f} orders")
+    logger.info(f"  Expert_high MAE (high region): {high_mae:.4f} orders")
 
-    plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp=timestamp)
+    plot_eval_results(preds, gts, metrics, breakdown_rows, timestamp=timestamp)

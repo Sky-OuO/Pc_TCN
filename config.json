@@ -17,7 +17,7 @@
     },
     "loss": {
         "high_pc_threshold": -4,
-        "alpha_high": 10.0
+        "alpha_high": 30.0
     },
     "training": {
         "num_epochs": 200,
@@ -54,10 +54,10 @@
     "regression_head": {
         "dims": [256, 128, 64]
     },
-    "moe": {
-        "threshold": -4.0,
-        "tau": 0.1,
-        "gate_lambda": 0.8
+    "stage": {
+        "risk_threshold": -4.0,
+        "stage1_epochs": 30,
+        "stage2_epochs": 150
     },
     "data_collection": {
         "tle_filter": {
