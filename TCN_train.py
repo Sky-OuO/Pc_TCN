@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
     criterion = AsymmetricMSELoss(
         high_pc_threshold=cfg['loss'].get('high_pc_threshold', -3.0),
-        alpha_high=cfg['loss'].get('alpha_high', 3.0),
+        alpha_high=cfg['loss'].get('alpha_high', 3.0)
     )
     val_criterion = torch.nn.MSELoss()
 
@@ -97,9 +97,8 @@ if __name__ == "__main__":
         model, train_loader, val_loader, criterion, val_criterion,
         optimizer, scheduler,
         moe_threshold=moe_cfg.get('threshold', -3.5),
-        moe_tau=moe_cfg.get('tau', 0.5),
-        expert_lambda=moe_cfg.get('expert_lambda', 0.5),
-        gate_lambda=moe_cfg.get('gate_lambda', 0.1),
+        moe_tau=moe_cfg.get('tau', 0.1),
+        gate_lambda=moe_cfg.get('gate_lambda', 1.0),
         num_epochs=cfg['training']['num_epochs'], device=device,
         patience=cfg['training']['patience'],
         timestamp=timestamp,

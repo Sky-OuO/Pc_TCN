@@ -6,7 +6,7 @@ from logger import logger
 
 
 def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, device,
-                     moe_threshold=-3.5, moe_tau=0.5, expert_lambda=0.5, gate_lambda=0.1):
+                     moe_threshold=-3.5, moe_tau=0.1, gate_lambda=1.0):
     model.train()
     train_loss = 0.0
 
@@ -19,28 +19,21 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
         optimizer.zero_grad()
         pred_low, pred_high, gate = model(batch_features)
 
-        mask_low = (log_targets < moe_threshold).squeeze(-1)
-        mask_high = (log_targets >= moe_threshold).squeeze(-1)
-
-        loss_low = torch.tensor(0.0, device=device)
-        loss_high = torch.tensor(0.0, device=device)
-
-        if mask_low.any():
-            loss_low = (criterion(pred_low[mask_low], log_targets[mask_low])
-                        * batch_weights[mask_low]).mean()
-        if mask_high.any():
-            loss_high = (criterion(pred_high[mask_high], log_targets[mask_high])
-                         * batch_weights[mask_high]).mean()
-
-
-        learned_mix = (1.0 - gate) * pred_low + gate * pred_high
-        loss_mix = (criterion(learned_mix, log_targets) * batch_weights).mean()
-
         with torch.no_grad():
-            gate_target = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
-        loss_gate = gate_criterion(gate, gate_target)
+            w_oracle = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
+            hard_low = (w_oracle < 0.5).squeeze(-1)
+            hard_high = ~hard_low
 
-        loss = loss_mix + expert_lambda * (loss_low + loss_high) + gate_lambda * loss_gate
+        loss_mix = torch.tensor(0.0, device=device)
+        if hard_low.any():
+            loss_mix = loss_mix + (criterion(pred_low[hard_low], log_targets[hard_low])
+                                   * batch_weights[hard_low]).mean()
+        if hard_high.any():
+            loss_mix = loss_mix + (criterion(pred_high[hard_high], log_targets[hard_high])
+                                    * batch_weights[hard_high]).mean()
+            
+        loss_gate = gate_criterion(gate, w_oracle)
+        loss = loss_mix + gate_lambda * loss_gate
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -116,7 +109,7 @@ def plot_loss_curve(train_losses, val_losses, filename='figures/loss_curve.png')
 
 
 def train_model(model, train_loader, val_loader, criterion, val_criterion,
-                optimizer, scheduler, moe_threshold=-3.5, moe_tau=0.3, expert_lambda=0.5, gate_lambda=0.1,
+                optimizer, scheduler, moe_threshold=-3.5, moe_tau=0.1, gate_lambda=1.0,
                 num_epochs=200, device='cuda', patience=10, timestamp=''):
 
     model.to(device)
@@ -129,7 +122,7 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
     for epoch in range(num_epochs):
         train_loss = _train_one_epoch(
             model, train_loader, criterion, gate_criterion, optimizer, device,
-            moe_threshold, moe_tau, expert_lambda, gate_lambda)
+            moe_threshold, moe_tau, gate_lambda)
 
         val_loss, log_mae, gate_acc, tail_mae, tail_bias, low_exp_mae, high_exp_mae = _validate_one_epoch(
             model, val_loader, val_criterion, moe_threshold, device)

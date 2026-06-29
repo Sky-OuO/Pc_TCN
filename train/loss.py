@@ -9,7 +9,7 @@ class AsymmetricMSELoss(nn.Module):
         self.high_pc_threshold = high_pc_threshold
         self.alpha_high = alpha_high
 
-    def forward(self, log_predictions, log_targets):
+    def forward(self, log_predictions, log_targets, reduction='none'):
         diff = log_predictions - log_targets
         abs_diff = torch.abs(diff)
 
@@ -28,4 +28,6 @@ class AsymmetricMSELoss(nn.Module):
             torch.ones_like(loss_flat),
         )
         loss_flat = loss_flat * asym_factor
+        if reduction == 'none':
+            return loss_flat
         return loss_flat.mean()
