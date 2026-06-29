@@ -26,14 +26,17 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
 
         loss_mix = torch.tensor(0.0, device=device)
         if hard_low.any():
-            loss_mix = loss_mix + (criterion(pred_low[hard_low], log_targets[hard_low])
-                                   * batch_weights[hard_low]).mean()
+            loss_mix += (criterion(pred_low[hard_low], log_targets[hard_low])
+                                     * batch_weights[hard_low]).mean()
         if hard_high.any():
-            loss_mix = loss_mix + (criterion(pred_high[hard_high], log_targets[hard_high])
-                                    * batch_weights[hard_high]).mean()
-            
+            loss_mix += (criterion(pred_high[hard_high], log_targets[hard_high])
+                                      * batch_weights[hard_high]).mean()
+
+        blend = (1.0 - gate) * pred_low + gate * pred_high
+        loss_blend = (criterion(blend, log_targets) * batch_weights).mean()
         loss_gate = gate_criterion(gate, w_oracle)
-        loss = loss_mix + gate_lambda * loss_gate
+
+        loss = loss_mix + loss_blend + gate_lambda * loss_gate
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
