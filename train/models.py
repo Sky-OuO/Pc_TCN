@@ -1,10 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from scipy.ndimage import gaussian_filter1d
-from scipy.signal.windows import triang
-from logger import logger
 
 
 class TCNBlock(nn.Module):
@@ -155,148 +151,55 @@ class FiLM(nn.Module):
 
 
 
-### LDS and FDS utilities
-def calibrate_mean_var(matrix, m1, v1, m2, v2, clip_min=0.1, clip_max=10.0):
-    if torch.sum(v1) < 1e-10:
-        return matrix
-    if (v1 == 0.).any():
-        valid  = (v1 != 0.)
-        factor = torch.clamp(v2[valid] / v1[valid], clip_min, clip_max)
-        matrix[:, valid] = (matrix[:, valid] - m1[valid]) * torch.sqrt(factor) + m2[valid]
-        return matrix
-    factor = torch.clamp(v2 / v1, clip_min, clip_max)
-    return (matrix - m1) * torch.sqrt(factor) + m2
-
-
-def get_lds_kernel_window(kernel='gaussian', ks=5, sigma=2):
-    assert kernel in ['gaussian', 'triang', 'laplace']
-    half_ks = (ks - 1) // 2
-    if kernel == 'gaussian':
-        base_kernel   = [0.] * half_ks + [1.] + [0.] * half_ks
-        kw            = gaussian_filter1d(base_kernel, sigma=sigma)
-        kernel_window = kw / max(kw)
-    elif kernel == 'triang':
-        kernel_window = triang(ks)
-    else:
-        laplace       = lambda x: np.exp(-abs(x) / sigma) / (2. * sigma)
-        kw            = list(map(laplace, np.arange(-half_ks, half_ks + 1)))
-        kernel_window = np.array(kw) / max(kw)
-    return np.array(kernel_window, dtype=np.float32)
-
-
-class FDS(nn.Module):
-    def __init__(self, feature_dim, bucket_num=100, bucket_start=0,
-                 start_update=0, start_smooth=1, kernel='gaussian', ks=5, sigma=2, momentum=0.9):
+class MoEHead(nn.Module):
+    """Mixture of Experts: two regression heads gated by a learned router."""
+    def __init__(self, feature_dim, head_dims, gate_dim=64):
         super().__init__()
-        self.feature_dim    = feature_dim
-        self.bucket_num     = bucket_num
-        self.bucket_start   = bucket_start
-        self.half_ks        = (ks - 1) // 2
-        self.momentum       = momentum
-        self.start_update   = start_update
-        self.start_smooth   = start_smooth
+        # threshold logic lives in trainer.py (mask splitting + gate target)
 
-        kw = torch.tensor(get_lds_kernel_window(kernel, ks, sigma), dtype=torch.float32)
-        self.register_buffer('kernel_window', kw)
+        def _make_head():
+            layers = []
+            prev = feature_dim
+            _dropouts = [0.3] + [0.2] * (len(head_dims) - 1)
+            for dim, drop in zip(head_dims, _dropouts):
+                layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
+                prev = dim
+            layers.append(nn.Linear(prev, 1))
+            return nn.Sequential(*layers)
 
-        n = bucket_num - bucket_start
-        self.register_buffer('running_mean',             torch.zeros(n, feature_dim))
-        self.register_buffer('running_var',              torch.ones(n, feature_dim))
-        self.register_buffer('running_mean_last_epoch',  torch.zeros(n, feature_dim))
-        self.register_buffer('running_var_last_epoch',   torch.ones(n, feature_dim))
-        self.register_buffer('smoothed_mean_last_epoch', torch.zeros(n, feature_dim))
-        self.register_buffer('smoothed_var_last_epoch',  torch.ones(n, feature_dim))
-        self.register_buffer('num_samples_tracked',      torch.zeros(n))
+        self.expert_low = _make_head()
+        self.expert_high = _make_head()
 
-    def _smooth_1d(self, x):
-        w = self.kernel_window.view(1, 1, -1)
-        return F.conv1d(
-            F.pad(x.unsqueeze(1).permute(2, 1, 0),
-                  pad=(self.half_ks, self.half_ks), mode='reflect'),
-            weight=w, padding=0
-        ).permute(2, 1, 0).squeeze(1)
+        self.gate = nn.Sequential(
+            nn.Linear(feature_dim, gate_dim),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(gate_dim, 2),
+        )
 
-    def _update_last_epoch_stats(self):
-        self.running_mean_last_epoch  = self.running_mean.clone()
-        self.running_var_last_epoch   = self.running_var.clone()
-        self.smoothed_mean_last_epoch = self._smooth_1d(self.running_mean_last_epoch)
-        self.smoothed_var_last_epoch  = self._smooth_1d(self.running_var_last_epoch)
+        with torch.no_grad():
+            self.expert_low[-1].bias.fill_(-5.0)
+            self.expert_high[-1].bias.fill_(-3.0)
 
-    def update_last_epoch_stats(self, epoch):
-        self._update_last_epoch_stats()
-        logger.debug(f"FDS: updated smoothed statistics at epoch {epoch}")
+    def forward(self, features):
+        pred_low = self.expert_low(features)       # (B, 1)
+        pred_high = self.expert_high(features)      # (B, 1)
 
-    def reset_running_stats(self):
-        """Reset all statistics buffers for a clean Stage 2 start."""
-        self.running_mean.zero_()
-        self.running_var.fill_(1.0)
-        self.running_mean_last_epoch.zero_()
-        self.running_var_last_epoch.fill_(1.0)
-        self.smoothed_mean_last_epoch.zero_()
-        self.smoothed_var_last_epoch.fill_(1.0)
-        self.num_samples_tracked.zero_()
-        logger.debug("FDS: running stats reset for Stage 2.")
-
-    def update_running_stats(self, features, labels, epoch):
-        assert self.feature_dim == features.size(1)
-        assert features.size(0) == labels.size(0)
-        for label in torch.unique(labels):
-            lb  = int(label.item())
-            if lb > self.bucket_num - 1 or lb < self.bucket_start:
-                continue
-            idx = lb - self.bucket_start
-            if lb == self.bucket_start:
-                curr_feats = features[labels <= label]
-            elif lb == self.bucket_num - 1:
-                curr_feats = features[labels >= label]
-            else:
-                curr_feats = features[labels == label]
-            curr_n    = curr_feats.size(0)
-            curr_mean = curr_feats.mean(0)
-            curr_var  = curr_feats.var(0, unbiased=(curr_n > 1))
-            self.num_samples_tracked[idx] += curr_n
-            factor = self.momentum if self.momentum is not None else \
-                     (1 - curr_n / float(self.num_samples_tracked[idx]))
-            factor = 0.0 if epoch == self.start_update else factor
-            self.running_mean[idx] = (1 - factor) * curr_mean + factor * self.running_mean[idx]
-            self.running_var[idx]  = (1 - factor) * curr_var  + factor * self.running_var[idx]
-        logger.debug(f"FDS: updated running stats at epoch {epoch}")
-
-    def smooth(self, features, labels, epoch):
-        if epoch < self.start_smooth:
-            return features
-        for label in torch.unique(labels):
-            lb  = int(label.item())
-            if lb > self.bucket_num - 1 or lb < self.bucket_start:
-                continue
-            idx = lb - self.bucket_start
-            if lb == self.bucket_start:
-                mask = labels <= label
-            elif lb == self.bucket_num - 1:
-                mask = labels >= label
-            else:
-                mask = labels == label
-            features[mask] = calibrate_mean_var(
-                features[mask],
-                self.running_mean_last_epoch[idx],
-                self.running_var_last_epoch[idx],
-                self.smoothed_mean_last_epoch[idx],
-                self.smoothed_var_last_epoch[idx],
-            )
-        return features
+        gate_logits = self.gate(features)            # (B, 2)
+        gate_probs = F.softmax(gate_logits, dim=-1)  # (B, 2)
+        
+        mixture = gate_probs[:, 0:1] * pred_low + gate_probs[:, 1:2] * pred_high
+        return mixture, pred_low, pred_high, gate_logits
 
 
 class TCN(nn.Module):
     def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.3,
                  unc_d_model=32, unc_num_heads=4, unc_dropout=0.1, unc_num_layers=2,
-                 fds=False, fds_bucket_num=100, fds_ks=5, fds_sigma=2,
-                 fds_momentum=0.9, fds_start_update=0, fds_start_smooth=1,
                  head_dims=None):
         super(TCN, self).__init__()
 
         self.unc_feature_dim = 14   # 7-dim per object x 2 objects (4 raw + 3 phase)
         self.geo_feature_dim = input_size - self.unc_feature_dim
-        self.use_fds         = fds
 
         self.unc_mlp = nn.Sequential(
             nn.LayerNorm(4),
@@ -346,31 +249,12 @@ class TCN(nn.Module):
         # Final FiLM: conditions pooled geo features on uncertainty
         self.film     = FiLM(geo_dim=out_channels,  unc_dim=out_channels)
 
-        # Regression head — LayerNorm instead of BatchNorm to avoid FDS interference
+        # MoE regression heads: gate + expert_low + expert_high
         _head_dims = head_dims if head_dims is not None else [128, 64]
-        head_layers = []
-        prev = out_channels
-        _dropouts = [0.3] + [0.2] * (len(_head_dims) - 1)
-        for dim, drop in zip(_head_dims, _dropouts):
-            head_layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
-            prev = dim
-        head_layers.append(nn.Linear(prev, 1))
-        self.regression_head = nn.Sequential(*head_layers)
-
-        with torch.no_grad():
-            self.regression_head[-1].bias.fill_(-5.0)
-
-        if fds:
-            self.FDS = FDS(
-                feature_dim=out_channels,
-                bucket_num=fds_bucket_num,
-                start_update=fds_start_update,
-                start_smooth=fds_start_smooth,
-                kernel='gaussian',
-                ks=fds_ks,
-                sigma=fds_sigma,
-                momentum=fds_momentum,
-            )
+        self.moe_head = MoEHead(
+            feature_dim=out_channels,
+            head_dims=_head_dims,
+        )
 
     def extract_features(self, x):
         x_geo  = x[:, :, :-self.unc_feature_dim]     # (batch, seq_len, geo_dim)
@@ -408,22 +292,8 @@ class TCN(nn.Module):
         # Final FiLM on pooled geo features
         return self.film(out_geo, fusion_unc)                    # (batch, out_channels)
 
-    def freeze_backbone(self):
-        for module in [self.network_early, self.network_late,
-                       self.temporal_pool, self.uncertainty_encoder,
-                       self.unc_mlp, self.film_mid, self.film]:
-            for param in module.parameters():
-                param.requires_grad = False
-        logger.info("Backbone frozen for Stage 2 decoupled training.")
-
-    def unfreeze_all(self):
-        for param in self.parameters():
-            param.requires_grad = True
-        logger.info("All parameters unfrozen.")
-
-    def forward(self, x, labels=None, epoch=0):
+    def forward(self, x):
         # x: (batch, seq_len, total_features)
-        out = self.extract_features(x)
-        if self.use_fds and self.training and epoch >= self.FDS.start_smooth and labels is not None:
-            out = self.FDS.smooth(out, labels, epoch)
-        return self.regression_head(out)
+        features = self.extract_features(x)
+        mixture, pred_low, pred_high, gate_logits = self.moe_head(features)
+        return mixture, pred_low, pred_high, gate_logits
