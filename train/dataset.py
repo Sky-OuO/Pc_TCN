@@ -63,7 +63,7 @@ def compute_lds_weights(labels, num_bins=100, lds_kernel='gaussian', lds_ks=5, l
 
     eff_num_per_label = np.array([eff_label_dist[b] for b in bin_index_per_label], dtype=np.float32)
     weights = np.where(eff_num_per_label > 0, 1.0 / eff_num_per_label, 0.0).astype(np.float32)
-    weights = np.clip(weights, 0.0, 50.0)
+    weights = np.clip(weights, 0.0, 10.0)
     if weights.mean() > 0:
         weights /= weights.mean()
     return weights

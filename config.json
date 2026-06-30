@@ -1,14 +1,14 @@
 {
     "feature_generation": {
-        "delta_t_minutes": 30,
-        "time_step_seconds": 10
+        "delta_t_minutes": 90,
+        "time_step_seconds": 30
     },
     "data": {
         "feature_path": "params/features.npy",
         "label_path": "params/labels.npy",
         "test_size": 0.2,
         "random_state": 42,
-        "seq_length": 121
+        "seq_length": 361
     },
     "model": {
         "num_channels": [64, 128, 128, 256, 256],
@@ -56,8 +56,8 @@
     },
     "moe": {
         "threshold": -4.0,
-        "expert_lambda": 0.5,
-        "gate_lambda": 0.1
+        "expert_lambda": 1.0,
+        "gate_lambda": 0.5
     },
     "data_collection": {
         "tle_filter": {

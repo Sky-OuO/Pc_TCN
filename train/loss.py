@@ -28,4 +28,4 @@ class AsymmetricMSELoss(nn.Module):
             torch.ones_like(loss_flat),
         )
         loss_flat = loss_flat * asym_factor
-        return loss_flat.mean()
+        return loss_flat

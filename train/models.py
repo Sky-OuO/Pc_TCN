@@ -155,8 +155,6 @@ class MoEHead(nn.Module):
     """Mixture of Experts: two regression heads gated by a learned router."""
     def __init__(self, feature_dim, head_dims, gate_dim=64):
         super().__init__()
-        # threshold logic lives in trainer.py (mask splitting + gate target)
-
         def _make_head():
             layers = []
             prev = feature_dim
@@ -179,7 +177,7 @@ class MoEHead(nn.Module):
 
         with torch.no_grad():
             self.expert_low[-1].bias.fill_(-5.0)
-            self.expert_high[-1].bias.fill_(-3.0)
+            self.expert_high[-1].bias.fill_(-2.0)
 
     def forward(self, features):
         pred_low = self.expert_low(features)       # (B, 1)

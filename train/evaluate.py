@@ -213,15 +213,13 @@ def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
     model = load_best_model(model_param, device, timestamp=timestamp)
     log_preds, low_preds, high_preds, gate_low_prob, log_gts = run_inference(
         model, val_features, val_labels, device, seq_length)
-
-    # Global metrics (mixture output)
+    
     metrics = compute_global_metrics(log_preds, log_gts)
     breakdown_rows = compute_breakdown(log_preds, log_gts, metrics['sigma'])
 
     print_global_summary(metrics, len(log_gts))
     print_breakdown(breakdown_rows)
 
-    # --- Gate & Expert diagnostics ---
     mask_low = log_gts < moe_threshold
     mask_high = log_gts >= moe_threshold
 

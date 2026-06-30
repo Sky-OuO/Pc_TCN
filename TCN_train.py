@@ -93,17 +93,17 @@ if __name__ == "__main__":
         patience=cfg['scheduler'].get('patience', 10),
     )
 
-    # trained_model = train_model(
-    #     model, train_loader, val_loader, criterion, val_criterion,
-    #     optimizer, scheduler,
-    #     moe_threshold=moe_cfg.get('threshold', -3.5),
-    #     expert_lambda=moe_cfg.get('expert_lambda', 0.5),
-    #     gate_lambda=moe_cfg.get('gate_lambda', 0.1),
-    #     num_epochs=cfg['training']['num_epochs'], device=device,
-    #     patience=cfg['training']['patience'],
-    #     timestamp=timestamp,
-    # )
+    trained_model = train_model(
+        model, train_loader, val_loader, criterion, val_criterion,
+        optimizer, scheduler,
+        moe_threshold=moe_cfg.get('threshold', -3.5),
+        expert_lambda=moe_cfg.get('expert_lambda', 0.5),
+        gate_lambda=moe_cfg.get('gate_lambda', 0.1),
+        num_epochs=cfg['training']['num_epochs'], device=device,
+        patience=cfg['training']['patience'],
+        timestamp=timestamp,
+    )
 
     evaluate_best_model(model_param, val_features, val_labels, device=device,
-                        seq_length=cfg['data']['seq_length'], timestamp="20260625_171800",
+                        seq_length=cfg['data']['seq_length'], timestamp=timestamp,
                         moe_threshold=moe_cfg.get('threshold', -3.5))
