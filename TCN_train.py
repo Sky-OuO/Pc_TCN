@@ -33,7 +33,7 @@ if __name__ == "__main__":
     log_target_max = cfg['training']['log_target_max']
     eps = 1e-10
     train_labels = np.clip(np.log10(np.maximum(train_labels, eps)), log_target_min, log_target_max)
-    val_labels = np.clip(np.log10(np.maximum(val_labels, eps)),   log_target_min, log_target_max)
+    val_labels = np.clip(np.log10(np.maximum(val_labels, eps)), log_target_min, log_target_max)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Using device: {device}")
@@ -41,15 +41,15 @@ if __name__ == "__main__":
     head_cfg = cfg.get('regression_head', {})
     moe_cfg = cfg.get('moe', {})
     model_param = {
-        'input_size':       train_features.shape[2],
-        'num_channels':     cfg['model']['num_channels'],
-        'kernel_size':      cfg['model']['kernel_size'],
-        'dropout':          cfg['model']['dropout'],
-        'unc_d_model':      cfg['uncertainty_encoder']['d_model'],
-        'unc_num_heads':    cfg['uncertainty_encoder']['num_heads'],
-        'unc_dropout':      cfg['uncertainty_encoder']['dropout'],
-        'unc_num_layers':   cfg['uncertainty_encoder'].get('num_layers', 2),
-        'head_dims':        head_cfg.get('dims', None),
+        'input_size': train_features.shape[2],
+        'num_channels': cfg['model']['num_channels'],
+        'kernel_size': cfg['model']['kernel_size'],
+        'dropout': cfg['model']['dropout'],
+        'unc_d_model': cfg['uncertainty_encoder']['d_model'],
+        'unc_num_heads': cfg['uncertainty_encoder']['num_heads'],
+        'unc_dropout': cfg['uncertainty_encoder']['dropout'],
+        'unc_num_layers': cfg['uncertainty_encoder'].get('num_layers', 2),
+        'head_dims': head_cfg.get('dims', None)
     }
     logger.info(f"config checkpoint: {cfg}")
 

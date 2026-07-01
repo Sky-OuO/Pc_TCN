@@ -59,31 +59,21 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device):
             all_log_targets.extend(log_targets.cpu().numpy().flatten())
 
             gate_pred = (gate_logits[:, 1] >= 0.0).long()   
-            gate_gt   = (log_targets.squeeze(-1) >= moe_threshold).long()
+            gate_gt = (log_targets.squeeze(-1) >= moe_threshold).long()
             gate_correct += (gate_pred == gate_gt).sum().item()
-            gate_total   += log_targets.size(0)
+            gate_total += log_targets.size(0)
 
     val_loss /= len(val_loader.dataset)
     preds = np.array(all_log_preds)
     targets = np.array(all_log_targets)
 
-    log_mae = np.mean(
-        np.abs(preds - targets)
-    )
+    log_mae = np.mean(np.abs(preds - targets))
     gate_acc = gate_correct / gate_total
     # tail metrics
     tail_mask = targets >= moe_threshold
     if tail_mask.sum() > 0:
-        tail_mae = np.mean(
-            np.abs(
-                preds[tail_mask]
-                - targets[tail_mask]
-            )
-        )
-        tail_bias = np.mean(
-            preds[tail_mask]
-            - targets[tail_mask]
-        )
+        tail_mae = np.mean(np.abs(preds[tail_mask]- targets[tail_mask]))
+        tail_bias = np.mean(preds[tail_mask] - targets[tail_mask])
     else:
         tail_mae = np.nan
         tail_bias = np.nan
@@ -110,44 +100,50 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
 
     model.to(device)
     gate_criterion = torch.nn.BCEWithLogitsLoss()
-    best_val_loss = float('inf')
+    best_log_mae = float("inf")
     patience_counter = 0
     train_losses, val_losses = [], []
     best_state = None
 
     for epoch in range(num_epochs):
-        train_loss = _train_one_epoch(
-            model, train_loader, criterion, gate_criterion, optimizer, device,
-            moe_threshold=moe_threshold, moe_tau=moe_tau, gate_lambda=gate_lambda,
-        )
+        train_loss = _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, device,
+                                      moe_threshold, moe_tau, gate_lambda)
 
         val_loss, log_mae, gate_acc, tail_mae, tail_bias = _validate_one_epoch(model, val_loader, val_criterion, moe_threshold, device)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
-        current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step(log_mae)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if log_mae < best_log_mae:
+            best_log_mae = log_mae
             patience_counter = 0
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone()for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
 
         if (epoch + 1) % 10 == 0:
-            logger.info(f'Epoch [{epoch+1}/{num_epochs}] lr={current_lr:.2e}')
-            logger.info(f'Train Loss: {train_loss:.6f}, VAL Loss: {val_loss:.6f}, Val MAE: {log_mae:.4f} orders, Gate Acc: {gate_acc:.4f}, Tail MAE: {tail_mae:.4f}, Tail Bias: {tail_bias:.4f}')
-            logger.info('-' * 50)
+            logger.info(f"Epoch [{epoch+1}/{num_epochs}] lr={current_lr:.2e}")
+            logger.info(
+                f"Train Loss: {train_loss:.6f}, "
+                f"Val Loss: {val_loss:.6f}, "
+                f"Val MAE: {log_mae:.4f} orders, "
+                f"Gate Acc: {gate_acc:.4f}, "
+                f"Tail MAE: {tail_mae:.4f}, "
+                f"Tail Bias: {tail_bias:.4f}"
+            )
+            logger.info("-" * 50)
 
         if patience_counter >= patience:
             logger.info(f"Early stop at epoch {epoch+1}")
             break
 
+    # Restore the best model before returning
     if best_state is not None:
-        torch.save(best_state, f'params/best_model_{timestamp}.pth')
-        logger.info(f"Best model saved (val_loss={best_val_loss:.6f})")
+        model.load_state_dict(best_state)
+        torch.save(best_state, f"params/best_model_{timestamp}.pth")
+        logger.info(f"Best model saved (Val MAE={best_log_mae:.4f})")
 
-    plot_loss_curve(train_losses, val_losses, filename=f'figures/loss_curve_{timestamp}.png')
+    plot_loss_curve(train_losses, val_losses, filename=f"figures/loss_curve_{timestamp}.png")
     return model
