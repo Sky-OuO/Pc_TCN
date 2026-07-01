@@ -18,21 +18,23 @@ def format_breakdown_value(value, suffix=''):
 
 def load_best_model(model_param, device, timestamp=''):
     model = TCN(**model_param)
-    model.load_state_dict(torch.load(f'params/best_model_{timestamp}.pth' , map_location=device, weights_only=True),
-                          strict=False)
+    model.load_state_dict(
+        torch.load(f'params/best_model_{timestamp}.pth', map_location=device, weights_only=True),
+        strict=True)
     model.eval()
     model.to(device)
     return model
 
 
-def run_inference(model, val_features, val_labels, device, seq_length=601):
+def run_inference(model, val_features, val_labels, device, seq_length=240):
     val_dataset = SatelliteCollisionDataset(val_features, val_labels, seq_length=seq_length)
     val_loader  = DataLoader(val_dataset, batch_size=32, shuffle=False)
     all_mix, all_low, all_high, all_gate_low, all_gts = [], [], [], [], []
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
-            mixture, pred_low, pred_high, gate_probs = model(batch_features)
+            mixture, pred_low, pred_high, gate_logits = model(batch_features)
+            gate_probs = torch.sigmoid(gate_logits, dim=-1)
             all_mix.extend(mixture.cpu().numpy().flatten())
             all_low.extend(pred_low.cpu().numpy().flatten())
             all_high.extend(pred_high.cpu().numpy().flatten())
@@ -208,7 +210,7 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp='')
 
 
 def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
-                        seq_length=601, timestamp='', moe_threshold=-3.5):
+                        seq_length=240, timestamp='', moe_threshold=-3.5):
     model = load_best_model(model_param, device, timestamp=timestamp)
     log_preds, low_preds, high_preds, gate_low_prob, log_gts = run_inference(
         model, val_features, val_labels, device, seq_length)

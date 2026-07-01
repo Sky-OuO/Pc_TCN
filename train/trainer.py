@@ -12,43 +12,27 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
 
     for batch_features, batch_labels, batch_weights in train_loader:
         batch_features = batch_features.to(device)
-        batch_labels = batch_labels.to(device)
-        batch_weights = batch_weights.to(device)
-        log_targets = batch_labels
+        batch_labels   = batch_labels.to(device)
+        batch_weights  = batch_weights.to(device)
+        log_targets    = batch_labels
 
         optimizer.zero_grad()
-        mixture, pred_low, pred_high, gate_probs = model(batch_features)
+        mixture, pred_low, pred_high, gate_logits = model(batch_features)
 
-        # --- Oracle hard-routing: each sample trains ONLY its assigned expert ---
+        # each sample trains ONLY its assigned expert
         with torch.no_grad():
-            w_oracle = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
-            hard_low = (w_oracle < 0.5).squeeze(-1)
+            w_oracle  = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
+            hard_low  = (w_oracle < 0.5).squeeze(-1)
             hard_high = ~hard_low
 
-        loss_mix = torch.tensor(0.0, device=device)
-        if hard_low.any():
-            loss_mix = loss_mix + (criterion(pred_low[hard_low], log_targets[hard_low])
-                                   * batch_weights[hard_low]).mean()
-        if hard_high.any():
-            loss_mix = loss_mix + (criterion(pred_high[hard_high], log_targets[hard_high])
-                                    * batch_weights[hard_high]).mean()
+        # Single mean over the full batch — avoids per-subset gradient imbalance
+        all_preds = torch.where(hard_low.unsqueeze(-1), pred_low, pred_high)
+        loss_mix  = (criterion(all_preds, log_targets) * batch_weights).mean()
 
-        # --- Domain-specific losses (adds extra specialization pressure) ---
-        mask_low = (log_targets < moe_threshold).squeeze(-1)
-        mask_high = (log_targets >= moe_threshold).squeeze(-1)
-        loss_low = torch.tensor(0.0, device=device)
-        loss_high = torch.tensor(0.0, device=device)
-        if mask_low.any():
-            loss_low = (criterion(pred_low[mask_low], log_targets[mask_low])
-                        * batch_weights[mask_low]).mean()
-        if mask_high.any():
-            loss_high = (criterion(pred_high[mask_high], log_targets[mask_high])
-                         * batch_weights[mask_high]).mean()
+        # Gate loss: BCE with soft oracle targets (on raw logits)
+        loss_gate = gate_criterion(gate_logits[:, 1:2], w_oracle)
 
-        # --- Gate loss: BCE with soft oracle targets ---
-        loss_gate = gate_criterion(gate_probs[:, 1:2], w_oracle)
-
-        loss = loss_mix + loss_low + loss_high + gate_lambda * loss_gate
+        loss = loss_mix + gate_lambda * loss_gate
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -68,16 +52,16 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device):
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
             log_targets = batch_labels.to(device)
-            mixture, _, _, gate_probs = model(batch_features)
+            mixture, _, _, gate_logits = model(batch_features)
             loss = criterion(mixture, log_targets).mean()
             val_loss += loss.item() * batch_features.size(0)
             all_log_preds.extend(mixture.cpu().numpy().flatten())
             all_log_targets.extend(log_targets.cpu().numpy().flatten())
 
-            gate_pred = (gate_probs[:, 1] >= 0.5).long()
-            gate_gt = (log_targets.squeeze(-1) >= moe_threshold).long()
+            gate_pred = (gate_logits[:, 1] >= 0.0).long()   
+            gate_gt   = (log_targets.squeeze(-1) >= moe_threshold).long()
             gate_correct += (gate_pred == gate_gt).sum().item()
-            gate_total += log_targets.size(0)
+            gate_total   += log_targets.size(0)
 
     val_loss /= len(val_loader.dataset)
     preds = np.array(all_log_preds)
@@ -125,7 +109,7 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
                 num_epochs=200, device='cuda', patience=10, timestamp=''):
 
     model.to(device)
-    gate_criterion = torch.nn.BCELoss()
+    gate_criterion = torch.nn.BCEWithLogitsLoss()
     best_val_loss = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []

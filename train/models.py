@@ -152,7 +152,7 @@ class FiLM(nn.Module):
 
 
 class MoEHead(nn.Module):
-    """Mixture of Experts: gate sees features + uncertainty + expert predictions."""
+    #Mixture of Experts: gate sees features + uncertainty + expert predictions
     def __init__(self, feature_dim, unc_dim, head_dims, gate_dim=64):
         super().__init__()
         def _make_head():
@@ -168,7 +168,6 @@ class MoEHead(nn.Module):
         self.expert_low = _make_head()
         self.expert_high = _make_head()
 
-        # Gate sees: backbone features + uncertainty + detached expert predictions
         _gate_in = feature_dim + unc_dim + 2
         self.gate = nn.Sequential(
             nn.Linear(_gate_in, gate_dim),
@@ -185,13 +184,12 @@ class MoEHead(nn.Module):
         pred_low = self.expert_low(features)       # (B, 1)
         pred_high = self.expert_high(features)      # (B, 1)
 
-        # Gate sees: features + uncertainty + detached expert outputs
         gate_in = torch.cat([features, unc_feat, pred_low.detach(), pred_high.detach()], dim=-1)
         gate_logits = self.gate(gate_in)             # (B, 2)
         gate_probs = F.softmax(gate_logits, dim=-1)  # (B, 2)
 
         mixture = gate_probs[:, 0:1] * pred_low + gate_probs[:, 1:2] * pred_high
-        return mixture, pred_low, pred_high, gate_probs
+        return mixture, pred_low, pred_high, gate_logits
 
 
 class TCN(nn.Module):

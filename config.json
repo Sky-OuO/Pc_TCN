@@ -8,7 +8,7 @@
         "label_path": "params/labels.npy",
         "test_size": 0.2,
         "random_state": 42,
-        "seq_length": 720
+        "seq_length": 240
     },
     "model": {
         "num_channels": [64, 128, 128, 256, 256],
