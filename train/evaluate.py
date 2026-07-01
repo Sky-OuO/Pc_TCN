@@ -32,8 +32,7 @@ def run_inference(model, val_features, val_labels, device, seq_length=601):
     with torch.no_grad():
         for batch_features, batch_labels, _ in val_loader:
             batch_features = batch_features.to(device)
-            mixture, pred_low, pred_high, gate_logits = model(batch_features)
-            gate_probs = torch.softmax(gate_logits, dim=-1)
+            mixture, pred_low, pred_high, gate_probs = model(batch_features)
             all_mix.extend(mixture.cpu().numpy().flatten())
             all_low.extend(pred_low.cpu().numpy().flatten())
             all_high.extend(pred_high.cpu().numpy().flatten())

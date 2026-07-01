@@ -56,8 +56,8 @@
     },
     "moe": {
         "threshold": -4.0,
-        "expert_lambda": 1.0,
-        "gate_lambda": 0.5
+        "tau": 0.1,
+        "gate_lambda": 2.0
     },
     "data_collection": {
         "tle_filter": {

@@ -47,7 +47,7 @@ class TCNBlock(nn.Module):
 
 
 class TemporalAttentionPooling(nn.Module):
-    def __init__(self, channels, max_seq_len=601):
+    def __init__(self, channels, max_seq_len=2048):
         super().__init__()
         self.attention = nn.Sequential(
             nn.Linear(channels, channels // 4),
@@ -152,8 +152,8 @@ class FiLM(nn.Module):
 
 
 class MoEHead(nn.Module):
-    """Mixture of Experts: two regression heads gated by a learned router."""
-    def __init__(self, feature_dim, head_dims, gate_dim=64):
+    """Mixture of Experts: gate sees features + uncertainty + expert predictions."""
+    def __init__(self, feature_dim, unc_dim, head_dims, gate_dim=64):
         super().__init__()
         def _make_head():
             layers = []
@@ -168,8 +168,10 @@ class MoEHead(nn.Module):
         self.expert_low = _make_head()
         self.expert_high = _make_head()
 
+        # Gate sees: backbone features + uncertainty + detached expert predictions
+        _gate_in = feature_dim + unc_dim + 2
         self.gate = nn.Sequential(
-            nn.Linear(feature_dim, gate_dim),
+            nn.Linear(_gate_in, gate_dim),
             nn.GELU(),
             nn.Dropout(0.1),
             nn.Linear(gate_dim, 2),
@@ -179,15 +181,17 @@ class MoEHead(nn.Module):
             self.expert_low[-1].bias.fill_(-5.0)
             self.expert_high[-1].bias.fill_(-2.0)
 
-    def forward(self, features):
+    def forward(self, features, unc_feat):
         pred_low = self.expert_low(features)       # (B, 1)
         pred_high = self.expert_high(features)      # (B, 1)
 
-        gate_logits = self.gate(features)            # (B, 2)
+        # Gate sees: features + uncertainty + detached expert outputs
+        gate_in = torch.cat([features, unc_feat, pred_low.detach(), pred_high.detach()], dim=-1)
+        gate_logits = self.gate(gate_in)             # (B, 2)
         gate_probs = F.softmax(gate_logits, dim=-1)  # (B, 2)
-        
+
         mixture = gate_probs[:, 0:1] * pred_low + gate_probs[:, 1:2] * pred_high
-        return mixture, pred_low, pred_high, gate_logits
+        return mixture, pred_low, pred_high, gate_probs
 
 
 class TCN(nn.Module):
@@ -251,6 +255,7 @@ class TCN(nn.Module):
         _head_dims = head_dims if head_dims is not None else [128, 64]
         self.moe_head = MoEHead(
             feature_dim=out_channels,
+            unc_dim=out_channels,
             head_dims=_head_dims,
         )
 
@@ -288,10 +293,10 @@ class TCN(nn.Module):
         out_geo    = self.temporal_pool(out_late)                 # (batch, out_channels)
 
         # Final FiLM on pooled geo features
-        return self.film(out_geo, fusion_unc)                    # (batch, out_channels)
+        out_geo = self.film(out_geo, fusion_unc)                 # (batch, out_channels)
+        return out_geo, fusion_unc
 
     def forward(self, x):
-        # x: (batch, seq_len, total_features)
-        features = self.extract_features(x)
-        mixture, pred_low, pred_high, gate_logits = self.moe_head(features)
-        return mixture, pred_low, pred_high, gate_logits
+        features, fusion_unc = self.extract_features(x)
+        mixture, pred_low, pred_high, gate_probs = self.moe_head(features, fusion_unc)
+        return mixture, pred_low, pred_high, gate_probs
