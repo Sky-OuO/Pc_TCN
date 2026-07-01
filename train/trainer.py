@@ -120,7 +120,7 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
 
     model.to(device)
     gate_criterion = torch.nn.CrossEntropyLoss()
-    best_tail_mae = float('inf')
+    best_val_loss = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
     best_state = None
@@ -137,10 +137,10 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
         val_losses.append(val_loss)
 
         current_lr = optimizer.param_groups[0]['lr']
-        scheduler.step(tail_mae if not np.isnan(tail_mae) else log_mae)
+        scheduler.step(log_mae)
 
-        if not np.isnan(tail_mae) and tail_mae < best_tail_mae:
-            best_tail_mae = tail_mae
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             patience_counter = 0
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
@@ -152,12 +152,12 @@ def train_model(model, train_loader, val_loader, criterion, val_criterion,
             logger.info('-' * 50)
 
         if patience_counter >= patience:
-            logger.info(f"Early stop at epoch {epoch+1} (best tail_mae={best_tail_mae:.4f})")
+            logger.info(f"Early stop at epoch {epoch+1}")
             break
 
     if best_state is not None:
         torch.save(best_state, f'params/best_model_{timestamp}.pth')
-        logger.info(f"Best model saved (tail_mae={best_tail_mae:.6f})")
+        logger.info(f"Best model saved (val_loss={best_val_loss:.6f})")
 
     plot_loss_curve(train_losses, val_losses, filename=f'figures/loss_curve_{timestamp}.png')
     return model
