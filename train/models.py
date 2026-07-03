@@ -152,7 +152,7 @@ class FiLM(nn.Module):
 
 
 class MoEHead(nn.Module):
-    #Mixture of Experts: gate sees features + uncertainty + expert predictions
+    #Mixture of Experts: gate sees features + uncertainty + expert predictions + disagreement
     def __init__(self, feature_dim, unc_dim, head_dims, gate_dim=64):
         super().__init__()
         def _make_head():
@@ -168,9 +168,11 @@ class MoEHead(nn.Module):
         self.expert_low = _make_head()
         self.expert_high = _make_head()
 
-        _gate_in = feature_dim + unc_dim + 2
+        # Gate input: features + unc + pred_low + pred_high + |pred_high - pred_low|
+        _gate_in = feature_dim + unc_dim + 3
         self.gate = nn.Sequential(
             nn.Linear(_gate_in, gate_dim),
+            nn.LayerNorm(gate_dim),
             nn.GELU(),
             nn.Dropout(0.1),
             nn.Linear(gate_dim, 2),
@@ -184,7 +186,8 @@ class MoEHead(nn.Module):
         pred_low = self.expert_low(features)       # (B, 1)
         pred_high = self.expert_high(features)      # (B, 1)
 
-        gate_in = torch.cat([features, unc_feat, pred_low.detach(), pred_high.detach()], dim=-1)
+        disagreement = torch.abs(pred_high.detach() - pred_low.detach())  # (B, 1)
+        gate_in = torch.cat([features, unc_feat, pred_low.detach(), pred_high.detach(), disagreement], dim=-1)
         gate_logits = self.gate(gate_in)             # (B, 2)
         gate_probs = F.softmax(gate_logits, dim=-1)  # (B, 2)
 

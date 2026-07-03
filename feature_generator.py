@@ -171,7 +171,7 @@ class Feature_Generator:
                 r2_mag,             # sat2 orbit radius
                 v2_mag,             # sat2 orbit velocity
                 d_enc,              # encounter-plane miss distance
-                log_pmax_proxy,     # max Pc proxy from radius/aspect-ratio scan
+                log_pmax_proxy,     # max Pc proxy from radius scan
                 *unc1,              # obj1 uncertainty features (7-dim: 4 raw + 3 phase)
                 *unc2,              # obj2 uncertainty features (7-dim: 4 raw + 3 phase)
             ])
