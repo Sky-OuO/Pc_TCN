@@ -23,7 +23,7 @@ def get_lds_kernel_window(kernel='gaussian', ks=5, sigma=2):
 
 
 class SatelliteCollisionDataset(Dataset):
-    def __init__(self, features, labels, seq_length=601, sample_weights=None):
+    def __init__(self, features, labels, seq_length=240, sample_weights=None):
         self.features = features
         self.labels = labels
         self.seq_length = seq_length

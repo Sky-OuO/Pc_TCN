@@ -33,34 +33,43 @@ if __name__ == "__main__":
     log_target_max = cfg['training']['log_target_max']
     eps = 1e-10
     train_labels = np.clip(np.log10(np.maximum(train_labels, eps)), log_target_min, log_target_max)
-    val_labels = np.clip(np.log10(np.maximum(val_labels, eps)),   log_target_min, log_target_max)
+    val_labels = np.clip(np.log10(np.maximum(val_labels, eps)), log_target_min, log_target_max)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Using device: {device}")
 
     head_cfg = cfg.get('regression_head', {})
     moe_cfg = cfg.get('moe', {})
+    model_cfg = cfg.get('model', {})
     model_param = {
-        'input_size':       train_features.shape[2],
-        'num_channels':     cfg['model']['num_channels'],
-        'kernel_size':      cfg['model']['kernel_size'],
-        'dropout':          cfg['model']['dropout'],
-        'unc_d_model':      cfg['uncertainty_encoder']['d_model'],
-        'unc_num_heads':    cfg['uncertainty_encoder']['num_heads'],
-        'unc_dropout':      cfg['uncertainty_encoder']['dropout'],
-        'unc_num_layers':   cfg['uncertainty_encoder'].get('num_layers', 2),
-        'head_dims':        head_cfg.get('dims', None),
+        'input_size': train_features.shape[2],
+        'num_channels': model_cfg['num_channels'],
+        'kernel_size': model_cfg['kernel_size'],
+        'dropout': model_cfg['dropout'],
+        'unc_d_model': cfg['uncertainty_encoder']['d_model'],
+        'unc_num_heads': cfg['uncertainty_encoder']['num_heads'],
+        'unc_dropout': cfg['uncertainty_encoder']['dropout'],
+        'unc_num_layers': cfg['uncertainty_encoder'].get('num_layers', 2),
+        'head_dims': head_cfg.get('dims', None),
+        'use_moe': model_cfg.get('use_moe', True),
+        'use_uncertainty_encoder': model_cfg.get('use_uncertainty_encoder', True),
+        'use_film': model_cfg.get('use_film', True),
+        'pos_bias_scale': model_cfg.get('pos_bias_scale', 0.0),
     }
     logger.info(f"config checkpoint: {cfg}")
 
     lds_cfg = cfg.get('lds', {})
-    train_weights = compute_lds_weights(
-        train_labels,
-        num_bins=lds_cfg.get('num_bins', 100),
-        lds_kernel=lds_cfg.get('kernel', 'gaussian'),
-        lds_ks=lds_cfg.get('ks', 5),
-        lds_sigma=lds_cfg.get('sigma', 2),
-    )
+    if lds_cfg.get('enabled', True):
+        train_weights = compute_lds_weights(
+            train_labels,
+            num_bins=lds_cfg.get('num_bins', 100),
+            lds_kernel=lds_cfg.get('kernel', 'gaussian'),
+            lds_ks=lds_cfg.get('ks', 5),
+            lds_sigma=lds_cfg.get('sigma', 2),
+        )
+    else:
+        train_weights = None
+        logger.info("LDS is disabled — using uniform sample weights.")
     train_dataset = SatelliteCollisionDataset(
         train_features, train_labels, seq_length=cfg['data']['seq_length'],
         sample_weights=train_weights)
@@ -97,8 +106,8 @@ if __name__ == "__main__":
         model, train_loader, val_loader, criterion, val_criterion,
         optimizer, scheduler,
         moe_threshold=moe_cfg.get('threshold', -3.5),
-        expert_lambda=moe_cfg.get('expert_lambda', 0.5),
-        gate_lambda=moe_cfg.get('gate_lambda', 0.1),
+        moe_tau=moe_cfg.get('tau', 0.1),
+        gate_lambda=moe_cfg.get('gate_lambda', 2.0),
         num_epochs=cfg['training']['num_epochs'], device=device,
         patience=cfg['training']['patience'],
         timestamp=timestamp,
