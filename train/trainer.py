@@ -9,6 +9,7 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
                      moe_threshold=-4.0, moe_tau=0.05, gate_lambda=1.0):
     model.train()
     train_loss = 0.0
+    use_moe = getattr(model, 'use_moe', True)
 
     for batch_features, batch_labels, batch_weights in train_loader:
         batch_features = batch_features.to(device)
@@ -19,19 +20,18 @@ def _train_one_epoch(model, train_loader, criterion, gate_criterion, optimizer, 
         optimizer.zero_grad()
         mixture, pred_low, pred_high, gate_logits = model(batch_features)
 
-        # each sample trains ONLY its assigned expert
-        with torch.no_grad():
-            w_oracle  = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
-            hard_low  = (w_oracle < 0.5).squeeze(-1)
+        if use_moe:
+            with torch.no_grad():
+                w_oracle  = torch.sigmoid((log_targets - moe_threshold) / moe_tau)
+                hard_low  = (w_oracle < 0.5).squeeze(-1)
 
-        # Single mean over the full batch — avoids per-subset gradient imbalance
-        all_preds = torch.where(hard_low.unsqueeze(-1), pred_low, pred_high)
-        loss_mix  = (criterion(all_preds, log_targets) * batch_weights).mean()
+            all_preds = torch.where(hard_low.unsqueeze(-1), pred_low, pred_high)
+            loss_mix  = (criterion(all_preds, log_targets) * batch_weights).mean()
+            loss_gate = gate_criterion(gate_logits[:, 1:2], w_oracle)
+            loss = loss_mix + gate_lambda * loss_gate
+        else:
+            loss = (criterion(mixture, log_targets) * batch_weights).mean()
 
-        # Gate loss: BCE with soft oracle targets (on raw logits)
-        loss_gate = gate_criterion(gate_logits[:, 1:2], w_oracle)
-
-        loss = loss_mix + gate_lambda * loss_gate
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -46,6 +46,7 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device,
 
     model.eval()
     val_loss = 0.0
+    use_moe = getattr(model, 'use_moe', True)
 
     all_log_preds = []
     all_log_targets = []
@@ -71,13 +72,13 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device,
             all_log_preds.extend(mixture.cpu().numpy().flatten())
             all_log_targets.extend(log_targets.cpu().numpy().flatten())
 
-            # gate accuracy
-            gate_pred = (gate_logits[:, 1] >= 0.0).long()
-            gate_gt = (log_targets.squeeze(-1) >= moe_threshold).long()
-            gate_correct += (gate_pred == gate_gt).sum().item()
-            gate_total += log_targets.size(0)
+            if use_moe:
+                gate_pred = (gate_logits[:, 1] >= 0.0).long()
+                gate_gt = (log_targets.squeeze(-1) >= moe_threshold).long()
+                gate_correct += (gate_pred == gate_gt).sum().item()
+                gate_total += log_targets.size(0)
 
-            if log_matrix:
+            if use_moe and log_matrix:
                 low_mask = (log_targets.squeeze(-1) < moe_threshold)
                 high_mask = ~low_mask
 
@@ -87,7 +88,6 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device,
                             pred_low[low_mask] - log_targets[low_mask]
                         ).cpu().numpy().flatten()
                     )
-
                     high_low_err.extend(
                         torch.abs(
                             pred_high[low_mask] - log_targets[low_mask]
@@ -108,7 +108,7 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device,
     preds = np.array(all_log_preds)
     targets = np.array(all_log_targets)
     log_mae = np.mean(np.abs(preds - targets))
-    gate_acc = gate_correct / gate_total
+    gate_acc = gate_correct / gate_total if gate_total > 0 else float('nan')
 
     tail_mask = targets >= moe_threshold
     if tail_mask.sum() > 0:
@@ -118,7 +118,7 @@ def _validate_one_epoch(model, val_loader, criterion, moe_threshold, device,
         tail_mae = np.nan
         tail_bias = np.nan
 
-    if log_matrix:
+    if use_moe and log_matrix:
         logger.info("========== Expert Specialization Matrix ==========")
         logger.info(
             f"Low Expert  on Low  region : {np.mean(low_low_err):.4f} orders"

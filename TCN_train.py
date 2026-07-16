@@ -40,16 +40,21 @@ if __name__ == "__main__":
 
     head_cfg = cfg.get('regression_head', {})
     moe_cfg = cfg.get('moe', {})
+    model_cfg = cfg.get('model', {})
     model_param = {
         'input_size': train_features.shape[2],
-        'num_channels': cfg['model']['num_channels'],
-        'kernel_size': cfg['model']['kernel_size'],
-        'dropout': cfg['model']['dropout'],
+        'num_channels': model_cfg['num_channels'],
+        'kernel_size': model_cfg['kernel_size'],
+        'dropout': model_cfg['dropout'],
         'unc_d_model': cfg['uncertainty_encoder']['d_model'],
         'unc_num_heads': cfg['uncertainty_encoder']['num_heads'],
         'unc_dropout': cfg['uncertainty_encoder']['dropout'],
         'unc_num_layers': cfg['uncertainty_encoder'].get('num_layers', 2),
-        'head_dims': head_cfg.get('dims', None)
+        'head_dims': head_cfg.get('dims', None),
+        'use_moe': model_cfg.get('use_moe', True),
+        'use_uncertainty_encoder': model_cfg.get('use_uncertainty_encoder', True),
+        'use_film': model_cfg.get('use_film', True),
+        'pos_bias_scale': model_cfg.get('pos_bias_scale', 0.0),
     }
     logger.info(f"config checkpoint: {cfg}")
 

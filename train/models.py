@@ -47,22 +47,27 @@ class TCNBlock(nn.Module):
 
 
 class TemporalAttentionPooling(nn.Module):
-    def __init__(self, channels, max_seq_len=2048):
+    def __init__(self, channels, max_seq_len=2048, pos_bias_scale=0.0):
         super().__init__()
         self.attention = nn.Sequential(
             nn.Linear(channels, channels // 4),
             nn.Tanh(),
             nn.Linear(channels // 4, 1)
         )
-        # Learnable per-position bias: position 0 = furthest from TCA, last = TCA
-        self.pos_bias = nn.Parameter(torch.zeros(max_seq_len, 1))
+        self.pos_bias_scale = pos_bias_scale
+        if pos_bias_scale > 0:
+            # Learnable per-position bias: position 0 = furthest from TCA, last = TCA
+            self.pos_bias = nn.Parameter(torch.zeros(max_seq_len, 1))
+        else:
+            self.register_buffer('pos_bias', torch.zeros(1, 1))
     
     def forward(self, x):
         # x: (batch, channels, seq_len)
         x_t = x.transpose(1, 2)  # (batch, seq_len, channels)
         seq_len = x_t.size(1)
         attn_weights = self.attention(x_t)  # (batch, seq_len, 1)
-        attn_weights = attn_weights + self.pos_bias[:seq_len]  # time-to-TCA positional bias
+        if self.pos_bias_scale > 0:
+            attn_weights = attn_weights + self.pos_bias_scale * self.pos_bias[:seq_len]
         attn_weights = F.softmax(attn_weights, dim=1)
         out = (x_t * attn_weights).sum(dim=1)  # (batch, channels)
         return out
@@ -195,14 +200,39 @@ class MoEHead(nn.Module):
         return mixture, pred_low, pred_high, gate_logits
 
 
+class SimpleRegressionHead(nn.Module):
+    """Single-head regression: TCN features + raw last-timestep skip connection."""
+    def __init__(self, feature_dim, head_dims, raw_dim=50):
+        super().__init__()
+        layers = []
+        prev = feature_dim + raw_dim  # TCN output + raw last-timestep
+        _dropouts = [0.3] + [0.2] * (len(head_dims) - 1)
+        for dim, drop in zip(head_dims, _dropouts):
+            layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
+            prev = dim
+        layers.append(nn.Linear(prev, 1))
+        self.net = nn.Sequential(*layers)
+        # Bias init: start predictions in the low-Pc regime where most data lives
+        with torch.no_grad():
+            layers[-1].bias.fill_(-5.0)
+
+    def forward(self, features, raw_last):
+        return self.net(torch.cat([features, raw_last], dim=-1))  # (B, 1)
+
+
 class TCN(nn.Module):
-    def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.3,
+    def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.4,
                  unc_d_model=32, unc_num_heads=4, unc_dropout=0.1, unc_num_layers=2,
-                 head_dims=None):
+                 head_dims=None, use_moe=True,
+                 use_uncertainty_encoder=True, use_film=True,
+                 pos_bias_scale=0.0):
         super(TCN, self).__init__()
 
         self.unc_feature_dim = 14   # 7-dim per object x 2 objects (4 raw + 3 phase)
         self.geo_feature_dim = input_size - self.unc_feature_dim
+
+        self.use_uncertainty_encoder = use_uncertainty_encoder
+        self.use_film = use_film
 
         self.unc_mlp = nn.Sequential(
             nn.LayerNorm(4),
@@ -237,67 +267,98 @@ class TCN(nn.Module):
 
         self.network_early = nn.Sequential(stem, *early_blocks)
         self.network_late  = nn.Sequential(*late_blocks)
-        self.temporal_pool = TemporalAttentionPooling(out_channels)
+        self.temporal_pool = TemporalAttentionPooling(out_channels, pos_bias_scale=pos_bias_scale)
 
-        self.uncertainty_encoder = CrossAttentionUncertaintyEncoder(
-            input_dim=15,  # 8 MLP + 4 raw residual + 3 phase
-            d_model=unc_d_model,
-            num_heads=unc_num_heads,
-            output_dim=out_channels,
-            dropout=unc_dropout,
-            num_layers=unc_num_layers,
-        )
-        # Mid-level FiLM: conditions intermediate geo features (seq) on uncertainty
-        self.film_mid = FiLM(geo_dim=mid_channels, unc_dim=out_channels)
-        # Final FiLM: conditions pooled geo features on uncertainty
-        self.film     = FiLM(geo_dim=out_channels,  unc_dim=out_channels)
+        # Uncertainty encoder (can be ablated)
+        if use_uncertainty_encoder:
+            self.uncertainty_encoder = CrossAttentionUncertaintyEncoder(
+                input_dim=15,  # 8 MLP + 4 raw residual + 3 phase
+                d_model=unc_d_model,
+                num_heads=unc_num_heads,
+                output_dim=out_channels,
+                dropout=unc_dropout,
+                num_layers=unc_num_layers,
+            )
+        else:
+            self.uncertainty_encoder = None
 
-        # MoE regression heads: gate + expert_low + expert_high
+        # FiLM layers (can be ablated)
+        if use_film:
+            self.film_mid = FiLM(geo_dim=mid_channels, unc_dim=out_channels)
+            self.film     = FiLM(geo_dim=out_channels,  unc_dim=out_channels)
+        else:
+            self.film_mid = None
+            self.film     = None
+
+        # Regression head: MoE or simple single-head
         _head_dims = head_dims if head_dims is not None else [128, 64]
-        self.moe_head = MoEHead(
-            feature_dim=out_channels,
-            unc_dim=out_channels,
-            head_dims=_head_dims,
-        )
+        self.use_moe = use_moe
+        if use_moe:
+            head_unc_dim = out_channels if use_uncertainty_encoder else 0
+            self.head = MoEHead(
+                feature_dim=out_channels,
+                unc_dim=head_unc_dim,
+                head_dims=_head_dims,
+            )
+        else:
+            self.head = SimpleRegressionHead(
+                feature_dim=out_channels,
+                head_dims=_head_dims,
+            )
 
     def extract_features(self, x):
         x_geo  = x[:, :, :-self.unc_feature_dim]     # (batch, seq_len, geo_dim)
         x_unc1 = x[:, :, -self.unc_feature_dim:-7]   # (batch, seq_len, 7): raw(4)+phase(3)
         x_unc2 = x[:, :, -7:]                         # (batch, seq_len, 7)
 
-        # Split raw uncertainty features (4-dim) from debris phase (3-dim)
-        raw_unc1 = x_unc1[:, :, :4]   # (batch, seq_len, 4)
-        phase1   = x_unc1[:, :, 4:]   # (batch, seq_len, 3)
-        raw_unc2 = x_unc2[:, :, :4]   # (batch, seq_len, 4)
-        phase2   = x_unc2[:, :, 4:]   # (batch, seq_len, 3)
-
-        # MLP transforms raw features → 8-dim embedding
-        emb1 = self.unc_mlp(raw_unc1)  # (batch, seq_len, 8)
-        emb2 = self.unc_mlp(raw_unc2)  # (batch, seq_len, 8)
-
-        # Residual: concatenate MLP embedding + raw features + debris phase → 15-dim
-        unc1 = torch.cat([emb1, raw_unc1, phase1], dim=-1)  # (batch, seq_len, 15)
-        unc2 = torch.cat([emb2, raw_unc2, phase2], dim=-1)  # (batch, seq_len, 15)
-
-        # Uncertainty encoder runs on 15-dim full sequence
-        fusion_unc = self.uncertainty_encoder(unc1, unc2)  # (batch, out_channels)
-
         # Geo early path
         x_geo     = x_geo.transpose(1, 2)                       # (batch, geo_dim, seq_len)
         out_early  = self.network_early(x_geo)                   # (batch, mid_channels, seq_len)
 
-        # Mid-level FiLM: broadcast uncertainty over time dimension
-        out_early  = self.film_mid(out_early, fusion_unc)        # (batch, mid_channels, seq_len)
+        # Uncertainty path (can be ablated)
+        if self.use_uncertainty_encoder:
+            # Split raw uncertainty features (4-dim) from debris phase (3-dim)
+            raw_unc1 = x_unc1[:, :, :4]   # (batch, seq_len, 4)
+            phase1   = x_unc1[:, :, 4:]   # (batch, seq_len, 3)
+            raw_unc2 = x_unc2[:, :, :4]   # (batch, seq_len, 4)
+            phase2   = x_unc2[:, :, 4:]   # (batch, seq_len, 3)
+
+            # MLP transforms raw features → 8-dim embedding
+            emb1 = self.unc_mlp(raw_unc1)  # (batch, seq_len, 8)
+            emb2 = self.unc_mlp(raw_unc2)  # (batch, seq_len, 8)
+
+            # Residual: concatenate MLP embedding + raw features + debris phase → 15-dim
+            unc1 = torch.cat([emb1, raw_unc1, phase1], dim=-1)  # (batch, seq_len, 15)
+            unc2 = torch.cat([emb2, raw_unc2, phase2], dim=-1)  # (batch, seq_len, 15)
+
+            fusion_unc = self.uncertainty_encoder(unc1, unc2)  # (batch, out_channels)
+
+            # Mid-level FiLM: broadcast uncertainty over time dimension
+            if self.use_film:
+                out_early = self.film_mid(out_early, fusion_unc)  # (batch, mid_channels, seq_len)
+        else:
+            fusion_unc = torch.zeros(x.size(0), 0, device=x.device)  # dummy
 
         # Geo late path + temporal pooling
         out_late   = self.network_late(out_early)                 # (batch, out_channels, seq_len)
         out_geo    = self.temporal_pool(out_late)                 # (batch, out_channels)
 
         # Final FiLM on pooled geo features
-        out_geo = self.film(out_geo, fusion_unc)                 # (batch, out_channels)
-        return out_geo, fusion_unc
+        if self.use_film and self.use_uncertainty_encoder:
+            out_geo = self.film(out_geo, fusion_unc)              # (batch, out_channels)
+
+        raw_last = x[:, -1, :]                                    # (batch, input_size)
+        return out_geo, fusion_unc, raw_last
 
     def forward(self, x):
-        features, fusion_unc = self.extract_features(x)
-        mixture, pred_low, pred_high, gate_probs = self.moe_head(features, fusion_unc)
-        return mixture, pred_low, pred_high, gate_probs
+        features, fusion_unc, raw_last = self.extract_features(x)
+        if self.use_moe:
+            mixture, pred_low, pred_high, gate_logits = self.head(features, fusion_unc)
+        else:
+            pred = self.head(features, raw_last)
+            # Return MoE-compatible tuple: dummy experts + zero logits
+            mixture   = pred
+            pred_low  = pred
+            pred_high = pred
+            gate_logits = torch.zeros(pred.size(0), 2, device=pred.device)
+        return mixture, pred_low, pred_high, gate_logits

@@ -45,7 +45,6 @@ def _build_uncertainty_features(sat, tle_age_days, tca_time, name=None):
     n     = sat.no_kozai          
     bstar = sat.bstar
     tau   = tle_age_days
-
     raw_features = [
         e,
         math.log(max(n, EPS)),
@@ -93,35 +92,39 @@ class Feature_Generator:
         self.sat1_epoch = (datetime(1949, 12, 31) + timedelta(days=self.sat1.jdsatepoch + self.sat1.jdsatepochF))
         self.sat2_epoch = (datetime(1949, 12, 31) + timedelta(days=self.sat2.jdsatepoch + self.sat2.jdsatepochF))
 
-    def calculate_distance(self, jd, fr):
-        e1, r1, v1 = self.sat1.sgp4(jd, fr)
-        if e1 != 0:
-            return float('inf')
-        e2, r2, v2 = self.sat2.sgp4(jd, fr)
-        if e2 != 0:
-            return float('inf')
-        distance = math.sqrt((r1[0]-r2[0])**2 + (r1[1]-r2[1])**2 + (r1[2]-r2[2])**2)
-        return distance
-    
-    def generate_tca_centered_data(self, delta_t_minutes=60, time_step_seconds=60):
-        start_time = self.tca_time - 2*timedelta(minutes=delta_t_minutes)
+    def generate_tca_centered_data(self, delta_t_minutes=10, time_step_seconds=10,
+                                   near_tca_minutes=1, near_tca_time_step_seconds=2):
+        start_time = self.tca_time - timedelta(minutes=delta_t_minutes)
+        split_time = self.tca_time - timedelta(minutes=near_tca_minutes)
         end_time = self.tca_time
         positions = []
         velocities = []
         times = [] 
-        
-        while start_time <= end_time:
-            jd, fr = jday(start_time.year, start_time.month, start_time.day,
-                         start_time.hour, start_time.minute, start_time.second)
+
+        def _append_sample(sample_time):
+            jd, fr = jday(sample_time.year, sample_time.month, sample_time.day,
+                         sample_time.hour, sample_time.minute, sample_time.second)
 
             e1, r1, v1 = self.sat1.sgp4(jd, fr)
             e2, r2, v2 = self.sat2.sgp4(jd, fr)
-            
+
             if e1 == 0 and e2 == 0:
                 positions.append((r1, r2))
                 velocities.append((v1, v2))
-                times.append(start_time) 
-            start_time += timedelta(seconds=time_step_seconds)
+                times.append(sample_time)
+        
+        current_time = start_time
+        while current_time <= split_time:
+            _append_sample(current_time)
+            current_time += timedelta(seconds=time_step_seconds)
+
+        current_time = split_time + timedelta(seconds=near_tca_time_step_seconds)
+        while current_time <= end_time:
+            _append_sample(current_time)
+            current_time += timedelta(seconds=near_tca_time_step_seconds)
+
+        if not times or times[-1] != end_time:
+            _append_sample(end_time)
 
         return positions, velocities, times 
     
@@ -132,6 +135,16 @@ class Feature_Generator:
         age2 = (self.tca_time - self.sat2_epoch).total_seconds() / 86400.0
         unc1 = _build_uncertainty_features(self.sat1, age1, self.tca_time, self.sat1_name)
         unc2 = _build_uncertainty_features(self.sat2, age2, self.tca_time, self.sat2_name)
+
+        distances = []
+        for (r1, r2), (v1, v2) in zip(positions, velocities):
+            d = np.linalg.norm(np.array(r2) - np.array(r1))
+            distances.append(d)
+        distances = np.array(distances)
+        min_dist_idx = int(np.argmin(distances))
+        tca_idx = len(times) - 1  # last timestep = labeled TCA
+        tca_to_min_offset = float(min_dist_idx - tca_idx)  # <0: min dist before TCA
+        min_distance = float(distances[min_dist_idx])
 
         for (r1, r2), (v1, v2) in zip(positions, velocities):
             r_rel = np.array(r2) - np.array(r1)
@@ -172,13 +185,15 @@ class Feature_Generator:
                 v2_mag,             # sat2 orbit velocity
                 d_enc,              # encounter-plane miss distance
                 log_pmax_proxy,     # max Pc proxy from radius scan
+                tca_to_min_offset,  # timesteps from TCA to SGP4 min-dist point
+                min_distance,       # SGP4-computed minimum distance (km)
                 *unc1,              # obj1 uncertainty features (7-dim: 4 raw + 3 phase)
                 *unc2,              # obj2 uncertainty features (7-dim: 4 raw + 3 phase)
             ])
         
         return np.array(features) 
 
-def feature_generator_iterater(train_data, delta_t_minutes=60, time_step_seconds=60):
+def feature_generator_iterater(train_data, delta_t_minutes=10, time_step_seconds=10):
     features = []
     labels = []
     for unit in tqdm(train_data):
@@ -196,7 +211,12 @@ def feature_generator_iterater(train_data, delta_t_minutes=60, time_step_seconds
         Feature_generator = Feature_Generator(tle_1_line1, tle_1_line2, tle_2_line1, tle_2_line2, tca_time,
                                               sat_1_name, sat_2_name)
 
-        positions, velocities, times = Feature_generator.generate_tca_centered_data(delta_t_minutes=delta_t_minutes, time_step_seconds=time_step_seconds)
+        positions, velocities, times = Feature_generator.generate_tca_centered_data(
+            delta_t_minutes=delta_t_minutes,
+            time_step_seconds=time_step_seconds,
+            near_tca_minutes=cfg.get("feature_generation", {}).get("near_tca_minutes", 2),
+            near_tca_time_step_seconds=cfg.get("feature_generation", {}).get("near_tca_time_step_seconds", 2),
+        )
         unit_features = Feature_generator.calculate_relative_features(positions, velocities, times)
         features.append(unit_features)
         labels.append(float(pc_gt))
@@ -251,9 +271,22 @@ if __name__ == "__main__":
     gen_cfg = cfg.get("feature_generation", {})
     all_features, all_labels = feature_generator_iterater(
         deduped_raw,
-        delta_t_minutes=gen_cfg.get("delta_t_minutes", 30),
+        delta_t_minutes=gen_cfg.get("delta_t_minutes", 10),
         time_step_seconds=gen_cfg.get("time_step_seconds", 10),
     )
+    print(f"Generated features shape: {all_features.shape}, Labels shape: {all_labels.shape}")
+    # min_distance_filter
+    filter_cfg = cfg.get("feature_generation", {}).get("min_distance_filter", {})
+    if filter_cfg.get("enabled", True):
+        threshold_km = filter_cfg.get("threshold_km", 5.0)
+        pc_min = filter_cfg.get("pc_min", 1e-3)
+        min_dists = all_features[:, 0, 17] 
+        remove_mask = (min_dists > threshold_km) & (all_labels > pc_min)
+        n_removed = int((remove_mask).sum())
+        all_features = all_features[~remove_mask]
+        all_labels = all_labels[~remove_mask]
+        print(f"Min-distance filter (window-min>{threshold_km:.0f} km & Pc>{pc_min:.0e}): "
+              f"removed {n_removed}, kept {len(all_labels)}")
 
     feature_path = "params/features.npy"
     np.save(feature_path, all_features)
