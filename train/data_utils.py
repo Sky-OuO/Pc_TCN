@@ -20,12 +20,10 @@ def normalize_features(features, train_indices):
     return (features - mean) / std
 
 def engineer_features(features):
-    # Layout: 18 geo features (16 original + tca_to_min_offset + min_distance)
-    #        + 14 uncertainty features (unc1[7] + unc2[7])
-    raw_geo  = features[:, :, :-14]   # 18 geo features
-    raw_unc  = features[:, :, -14:]   # 14 uncertainty features (unc1[7] + unc2[7])
+    raw_geo  = features[:, :, :-14]   
+    raw_unc  = features[:, :, -14:]   
     diff_geo = np.diff(raw_geo, axis=1, prepend=raw_geo[:, :1, :])
-    return np.concatenate([raw_geo, diff_geo, raw_unc], axis=2)  # 18+18+14=50 total
+    return np.concatenate([raw_geo, diff_geo, raw_unc], axis=2)  
 
 
 def load_data(feature_path, label_path, test_size=0.2, random_state=42):
@@ -36,3 +34,23 @@ def load_data(feature_path, label_path, test_size=0.2, random_state=42):
     train_features, val_features = features[train_indices], features[val_indices]
     train_labels, val_labels = labels[train_indices], labels[val_indices]
     return train_features, train_labels, val_features, val_labels
+
+
+def load_hybrid_data(feature_path, label_path, test_size=0.2, random_state=42):
+    features, labels = load_raw_data(feature_path, label_path)
+    train_indices, val_indices = split_indices(len(features), test_size, random_state)
+
+    features = engineer_features(features)          
+    features = normalize_features(features, train_indices)
+
+    unc_dim = 14
+    geo_dim = features.shape[2] - unc_dim
+
+    geo_seq = features[:, :, :geo_dim]     
+    unc_static = features[:, 0, geo_dim:]           
+
+    train_geo, val_geo = geo_seq[train_indices], geo_seq[val_indices]
+    train_unc, val_unc = unc_static[train_indices], unc_static[val_indices]
+    train_labels, val_labels = labels[train_indices], labels[val_indices]
+
+    return train_geo, train_unc, train_labels, val_geo, val_unc, val_labels

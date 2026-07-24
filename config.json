@@ -20,11 +20,19 @@
     "model": {
         "num_channels": [32, 64, 128],
         "kernel_size": 3,
-        "dropout": 0.4,
-        "use_moe": false,
-        "use_uncertainty_encoder": false,
-        "use_film": false,
-        "pos_bias_scale": 0.0
+        "dropout": 0.4
+    },
+    "xgboost": {
+        "n_estimators": 300,
+        "max_depth": 4,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8
+    },
+    "xgb_leaf_embed": {
+        "max_leaves": 64,
+        "embed_dim": 8,
+        "out_dim": 64
     },
     "loss": {
         "high_pc_threshold": -4,
@@ -46,30 +54,8 @@
         "factor": 0.5,
         "patience": 10
     },
-    "uncertainty_encoder": {
-        "d_model": 32,
-        "num_heads": 4,
-        "dropout": 0.1,
-        "num_layers": 2
-    },
-    "debris_phase": {
-        "threshold_a_years": 2.0,
-        "threshold_b_years": 7.0
-    },
-    "lds": {
-        "enabled": false,
-        "num_bins": 100,
-        "kernel": "gaussian",
-        "ks": 3,
-        "sigma": 0.5
-    },
     "regression_head": {
         "dims": [64, 32]
-    },
-    "moe": {
-        "threshold": -4,
-        "tau": 0.1,
-        "gate_lambda": 2.0
     },
     "data_collection": {
         "tle_filter": {

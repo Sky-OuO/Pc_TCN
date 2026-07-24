@@ -1,9 +1,6 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader
-from train.models import TCN
-from train.dataset import SatelliteCollisionDataset
 import os
 from logger import logger
 
@@ -16,8 +13,7 @@ def format_breakdown_value(value, suffix=''):
     return f"{value:.1f}{suffix}" if suffix else f"{value:+.4f}" if value < 0 else f"{value:.4f}"
 
 
-def load_best_model(model_param, device, timestamp=''):
-    model = TCN(**model_param)
+def load_best_model(model, device, timestamp=''):
     model.load_state_dict(
         torch.load(f'params/best_model_{timestamp}.pth', map_location=device, weights_only=True),
         strict=True)
@@ -26,22 +22,17 @@ def load_best_model(model_param, device, timestamp=''):
     return model
 
 
-def run_inference(model, val_features, val_labels, device, seq_length=240):
-    val_dataset = SatelliteCollisionDataset(val_features, val_labels, seq_length=seq_length)
-    val_loader  = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    all_mix, all_low, all_high, all_gate_low, all_gts = [], [], [], [], []
+def run_inference(model, val_loader, device):
+    all_preds, all_gts = [], []
     with torch.no_grad():
-        for batch_features, batch_labels, _ in val_loader:
-            batch_features = batch_features.to(device)
-            mixture, pred_low, pred_high, gate_logits = model(batch_features)
-            gate_probs = torch.sigmoid(gate_logits)
-            all_mix.extend(mixture.cpu().numpy().flatten())
-            all_low.extend(pred_low.cpu().numpy().flatten())
-            all_high.extend(pred_high.cpu().numpy().flatten())
-            all_gate_low.extend(gate_probs[:, 0].cpu().numpy().flatten())
+        for geo_seq, leaf_idx, xgb_pred, batch_labels, _ in val_loader:
+            geo_seq  = geo_seq.to(device)
+            leaf_idx = leaf_idx.to(device)
+            xgb_pred = xgb_pred.to(device)
+            pred = model(geo_seq, leaf_idx, xgb_pred)
+            all_preds.extend(pred.cpu().numpy().flatten())
             all_gts.extend(batch_labels.numpy().flatten())
-    return (np.array(all_mix), np.array(all_low), np.array(all_high),
-            np.array(all_gate_low), np.array(all_gts))
+    return np.array(all_preds), np.array(all_gts)
 
 
 def compute_global_metrics(log_preds, log_gts):
@@ -209,32 +200,15 @@ def plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp='')
     logger.info("Evaluation plots saved to 'figures/' directory")
 
 
-def evaluate_best_model(model_param, val_features, val_labels, device='cuda',
-                        seq_length=240, timestamp='', moe_threshold=-3.5):
-    model = load_best_model(model_param, device, timestamp=timestamp)
-    log_preds, low_preds, high_preds, gate_low_prob, log_gts = run_inference(
-        model, val_features, val_labels, device, seq_length)
-    
+def evaluate_best_model(model, val_loader, val_labels, device='cuda',
+                        timestamp=''):
+    model = load_best_model(model, device, timestamp=timestamp)
+    log_preds, log_gts = run_inference(model, val_loader, device)
+
     metrics = compute_global_metrics(log_preds, log_gts)
     breakdown_rows = compute_breakdown(log_preds, log_gts, metrics['sigma'])
 
     print_global_summary(metrics, len(log_gts))
     print_breakdown(breakdown_rows)
-
-    mask_low = log_gts < moe_threshold
-    mask_high = log_gts >= moe_threshold
-
-    gate_low_region = float(np.mean(gate_low_prob[mask_low])) if mask_low.sum() > 0 else float('nan')
-    gate_high_region = float(np.mean(1.0 - gate_low_prob[mask_high])) if mask_high.sum() > 0 else float('nan')
-    low_exp_mae = float(np.mean(np.abs(low_preds[mask_low] - log_gts[mask_low]))) if mask_low.sum() > 0 else float('nan')
-    high_exp_mae = float(np.mean(np.abs(high_preds[mask_high] - log_gts[mask_high]))) if mask_high.sum() > 0 else float('nan')
-
-    logger.info(f"\n{'─'*50}")
-    logger.info(f"Gate & Expert Diagnostics (threshold={moe_threshold})")
-    logger.info(f"{'─'*50}")
-    logger.info(f" Gate confidence (low region):  {gate_low_region:.4f}")
-    logger.info(f" Gate confidence (high region): {gate_high_region:.4f}")
-    logger.info(f" Expert_low MAE (low region):   {low_exp_mae:.4f} orders")
-    logger.info(f" Expert_high MAE (high region): {high_exp_mae:.4f} orders")
 
     plot_eval_results(log_preds, log_gts, metrics, breakdown_rows, timestamp=timestamp)

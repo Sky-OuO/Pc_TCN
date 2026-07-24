@@ -222,6 +222,7 @@ class DataCollectionPipeline:
                 tables = pd.read_html(io.StringIO(resp.text))
                 if tables and len(tables) > 3:
                     df = tables[3].values
+                    
                     initial_data, sat_ids = self.parse_celestrak_data(df)
                     
                     self.all_data.extend(initial_data)

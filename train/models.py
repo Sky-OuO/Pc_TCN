@@ -1,364 +1,158 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import xgboost as xgb
 
 
 class TCNBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout=0.2):
-        super(TCNBlock, self).__init__()
+    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout=0.3):
+        super().__init__()
         padding = (kernel_size - 1) * dilation
-        
         self.conv1 = nn.utils.parametrizations.weight_norm(
-            nn.Conv1d(in_channels, out_channels, kernel_size, dilation=dilation, padding=padding)
-        )
-        self.relu1 = nn.ReLU()
-        self.dropout1 = nn.Dropout(dropout)
-
+            nn.Conv1d(in_channels, out_channels, kernel_size, dilation=dilation, padding=padding))
         self.conv2 = nn.utils.parametrizations.weight_norm(
-            nn.Conv1d(out_channels, out_channels, kernel_size, dilation=dilation, padding=padding)
-        )
-        self.relu2 = nn.ReLU()
-        self.dropout2 = nn.Dropout(dropout)
-        
+            nn.Conv1d(out_channels, out_channels, kernel_size, dilation=dilation, padding=padding))
+        self.act = nn.ReLU()
+        self.drop1 = nn.Dropout(dropout)
+        self.drop2 = nn.Dropout(dropout)
         self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
-        self.relu = nn.ReLU()
-        
+
     def forward(self, x):
         residual = x
-        
-        out = self.conv1(x)
-        out = self.relu1(out)
-        out = self.dropout1(out)
-        
-        out = self.conv2(out)
-        out = self.relu2(out)
-        out = self.dropout2(out)
+        out = self.drop1(self.act(self.conv1(x)))
+        out = self.drop2(self.act(self.conv2(out)))
 
-        if residual.shape[2] != out.shape[2]:
+        if out.shape[2] != residual.shape[2]:
             crop = out.shape[2] - residual.shape[2]
-            out = out[:, :, :-crop] if crop > 0 else out
-        
-        if self.downsample:
+            out = out[:, :, :-crop]
+        if self.downsample is not None:
             residual = self.downsample(residual)
-            
-        out += residual
-        out = self.relu(out)
-        return out
+        return self.act(out + residual)
 
 
-class TemporalAttentionPooling(nn.Module):
-    def __init__(self, channels, max_seq_len=2048, pos_bias_scale=0.0):
+class ContentAttentionPool(nn.Module):
+    def __init__(self, channels):
         super().__init__()
-        self.attention = nn.Sequential(
+        self.score = nn.Sequential(
             nn.Linear(channels, channels // 4),
             nn.Tanh(),
-            nn.Linear(channels // 4, 1)
+            nn.Linear(channels // 4, 1),
         )
-        self.pos_bias_scale = pos_bias_scale
-        if pos_bias_scale > 0:
-            # Learnable per-position bias: position 0 = furthest from TCA, last = TCA
-            self.pos_bias = nn.Parameter(torch.zeros(max_seq_len, 1))
-        else:
-            self.register_buffer('pos_bias', torch.zeros(1, 1))
-    
+
     def forward(self, x):
         # x: (batch, channels, seq_len)
-        x_t = x.transpose(1, 2)  # (batch, seq_len, channels)
-        seq_len = x_t.size(1)
-        attn_weights = self.attention(x_t)  # (batch, seq_len, 1)
-        if self.pos_bias_scale > 0:
-            attn_weights = attn_weights + self.pos_bias_scale * self.pos_bias[:seq_len]
-        attn_weights = F.softmax(attn_weights, dim=1)
-        out = (x_t * attn_weights).sum(dim=1)  # (batch, channels)
-        return out
+        x_t = x.transpose(1, 2)                     # (batch, seq_len, channels)
+        weights = F.softmax(self.score(x_t), dim=1)   # (batch, seq_len, 1)
+        return (x_t * weights).sum(dim=1)              # (batch, channels)
 
 
-class CrossAttentionUncertaintyEncoder(nn.Module):
-    def __init__(self, input_dim=9, d_model=32, num_heads=4, output_dim=128, dropout=0.1, num_layers=2):
+class GeoTCNEncoder(nn.Module):
+    def __init__(self, geo_dim, num_channels=(64, 128, 256), kernel_size=5, dropout=0.3):
         super().__init__()
-        self.pre_encoder = nn.Sequential(
-            nn.Linear(input_dim, d_model),
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-            nn.Linear(d_model, d_model),
+        stem = nn.Conv1d(geo_dim, num_channels[0], 1)
+        blocks = []
+        for i, ch in enumerate(num_channels):
+            in_ch = num_channels[i - 1] if i > 0 else num_channels[0]
+            blocks.append(TCNBlock(in_ch, ch, kernel_size, dilation=2 ** i, dropout=dropout))
+        self.net = nn.Sequential(stem, *blocks)
+        self.pool = ContentAttentionPool(num_channels[-1])
+        self.out_dim = num_channels[-1]
+
+    def forward(self, x_geo):
+        # x_geo: (batch, seq_len, geo_dim) -> (batch, geo_dim, seq_len)
+        h = self.net(x_geo.transpose(1, 2))
+        return self.pool(h)  # (batch, out_dim)
+
+class XGBoostUncertaintyBranch:
+    def __init__(self, **xgb_params):
+        default_params = dict(
+            n_estimators=300,
+            max_depth=4,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="reg:squarederror",
+            n_jobs=-1
         )
-        # Stacked cross-attention layers
-        self.attn_layers_1to2 = nn.ModuleList([
-            nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-            for _ in range(num_layers)
-        ])
-        self.attn_layers_2to1 = nn.ModuleList([
-            nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-            for _ in range(num_layers)
-        ])
-        self.norms_a = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(2 * num_layers)])
-        self.norms_b = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(2 * num_layers)])
-        self.ffns_a = nn.ModuleList([
-            nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
-            for _ in range(num_layers)
-        ])
-        self.ffns_b = nn.ModuleList([
-            nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
-            for _ in range(num_layers)
-        ])
-        # Time-aware pooling instead of naive mean
-        self.pool_a = TemporalAttentionPooling(d_model)
-        self.pool_b = TemporalAttentionPooling(d_model)
-        self.fusion = nn.Sequential(
-            nn.Linear(2 * d_model, d_model),
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-            nn.Linear(d_model, output_dim),
-        )
+        default_params.update(xgb_params)
+        self.model = xgb.XGBRegressor(**default_params)
+        self.n_trees = default_params["n_estimators"]
 
-    def forward(self, unc1, unc2):
-        # unc1, unc2: (batch, seq_len, input_dim)
-        ctx1 = self.pre_encoder(unc1)  # (batch, seq_len, d_model)
-        ctx2 = self.pre_encoder(unc2)
+    def fit(self, unc_features: np.ndarray, log10_pc_targets: np.ndarray):
+        self.model.fit(unc_features, log10_pc_targets)
+        return self
 
-        for i, (attn_1to2, attn_2to1, ffn_a, ffn_b) in enumerate(
-                zip(self.attn_layers_1to2, self.attn_layers_2to1, self.ffns_a, self.ffns_b)):
-            # obj1 attends to obj2
-            attn_out, _ = attn_1to2(ctx1, ctx2, ctx2)
-            ctx1 = self.norms_a[2 * i](ctx1 + attn_out)
-            ctx1 = self.norms_a[2 * i + 1](ctx1 + ffn_a(ctx1))
-            # obj2 attends to obj1
-            attn_out, _ = attn_2to1(ctx2, ctx1, ctx1)
-            ctx2 = self.norms_b[2 * i](ctx2 + attn_out)
-            ctx2 = self.norms_b[2 * i + 1](ctx2 + ffn_b(ctx2))
-
-        # TemporalAttentionPooling expects (batch, channels, seq_len)
-        ctx1_pooled = self.pool_a(ctx1.transpose(1, 2))  # (batch, d_model)
-        ctx2_pooled = self.pool_b(ctx2.transpose(1, 2))  # (batch, d_model)
-        return self.fusion(torch.cat([ctx1_pooled, ctx2_pooled], dim=1))  # (batch, output_dim)
+    def transform(self, unc_features: np.ndarray):
+        booster = self.model.get_booster()
+        dmat = xgb.DMatrix(unc_features)
+        leaf_indices = booster.predict(dmat, pred_leaf=True).astype(np.int64)
+        raw_pred = self.model.predict(unc_features).astype(np.float32)
+        return leaf_indices, raw_pred
 
 
-class FiLM(nn.Module):
-    def __init__(self, geo_dim, unc_dim=None):
+class XGBLeafEmbedding(nn.Module):
+    def __init__(self, n_trees, max_leaves, embed_dim=8, out_dim=64):
         super().__init__()
-        if unc_dim is None:
-            unc_dim = geo_dim
-        self.gamma_layer = nn.Linear(unc_dim, geo_dim)
-        self.beta_layer  = nn.Linear(unc_dim, geo_dim)
-        nn.init.zeros_(self.gamma_layer.weight)
-        nn.init.zeros_(self.gamma_layer.bias)
-        nn.init.zeros_(self.beta_layer.weight)
-        nn.init.zeros_(self.beta_layer.bias)
+        self.leaf_embed = nn.Embedding(n_trees * max_leaves, embed_dim)
+        self.n_trees = n_trees
+        self.max_leaves = max_leaves
+        self.proj = nn.Sequential(
+            nn.Linear(n_trees * embed_dim + 1, out_dim), 
+            nn.LayerNorm(out_dim),
+            nn.GELU())
 
-    def forward(self, geo_feat, uncertainty_feat):
-        gamma = 1.0 + self.gamma_layer(uncertainty_feat)  # (batch, geo_dim)
-        beta  = self.beta_layer(uncertainty_feat)          # (batch, geo_dim)
-        if geo_feat.dim() == 3:
-            # geo_feat: (batch, geo_dim, seq_len) — broadcast over time
-            gamma = gamma.unsqueeze(-1)
-            beta  = beta.unsqueeze(-1)
-        return gamma * geo_feat + beta
+    def forward(self, leaf_indices, raw_pred):
+        offsets = torch.arange(self.n_trees, device=leaf_indices.device) * self.max_leaves
+        flat_idx = leaf_indices + offsets.unsqueeze(0)     # (batch, n_trees)
+        embedded = self.leaf_embed(flat_idx).flatten(1)      # (batch, n_trees*embed_dim)
+        combined = torch.cat([embedded, raw_pred], dim=-1)
+        return self.proj(combined)                             # (batch, out_dim)
 
-
-
-class MoEHead(nn.Module):
-    #Mixture of Experts: gate sees features + uncertainty + expert predictions + disagreement
-    def __init__(self, feature_dim, unc_dim, head_dims, gate_dim=64):
+class RegressionHead(nn.Module):
+    def __init__(self, geo_dim, unc_dim, hidden_dims=(128, 64), dropout=0.3):
         super().__init__()
-        def _make_head():
-            layers = []
-            prev = feature_dim
-            _dropouts = [0.3] + [0.2] * (len(head_dims) - 1)
-            for dim, drop in zip(head_dims, _dropouts):
-                layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
-                prev = dim
-            layers.append(nn.Linear(prev, 1))
-            return nn.Sequential(*layers)
-
-        self.expert_low = _make_head()
-        self.expert_high = _make_head()
-
-        # Gate input: features + unc + pred_low + pred_high + |pred_high - pred_low|
-        _gate_in = feature_dim + unc_dim + 3
-        self.gate = nn.Sequential(
-            nn.Linear(_gate_in, gate_dim),
-            nn.LayerNorm(gate_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(gate_dim, 2),
-        )
-
-        with torch.no_grad():
-            self.expert_low[-1].bias.fill_(-5.0)
-            self.expert_high[-1].bias.fill_(-2.0)
-
-    def forward(self, features, unc_feat):
-        pred_low = self.expert_low(features)       # (B, 1)
-        pred_high = self.expert_high(features)      # (B, 1)
-
-        disagreement = torch.abs(pred_high.detach() - pred_low.detach())  # (B, 1)
-        gate_in = torch.cat([features, unc_feat, pred_low.detach(), pred_high.detach(), disagreement], dim=-1)
-        gate_logits = self.gate(gate_in)             # (B, 2)
-        gate_probs = F.softmax(gate_logits, dim=-1)  # (B, 2)
-
-        mixture = gate_probs[:, 0:1] * pred_low + gate_probs[:, 1:2] * pred_high
-        return mixture, pred_low, pred_high, gate_logits
-
-
-class SimpleRegressionHead(nn.Module):
-    """Single-head regression: TCN features + raw last-timestep skip connection."""
-    def __init__(self, feature_dim, head_dims, raw_dim=50):
-        super().__init__()
-        layers = []
-        prev = feature_dim + raw_dim  # TCN output + raw last-timestep
-        _dropouts = [0.3] + [0.2] * (len(head_dims) - 1)
-        for dim, drop in zip(head_dims, _dropouts):
-            layers += [nn.Linear(prev, dim), nn.LayerNorm(dim), nn.GELU(), nn.Dropout(drop)]
-            prev = dim
+        layers, prev = [], geo_dim + unc_dim
+        for i, h in enumerate(hidden_dims):
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.GELU(),
+                       nn.Dropout(dropout if i == 0 else dropout * 0.7)]
+            prev = h
         layers.append(nn.Linear(prev, 1))
         self.net = nn.Sequential(*layers)
-        # Bias init: start predictions in the low-Pc regime where most data lives
-        with torch.no_grad():
-            layers[-1].bias.fill_(-5.0)
 
-    def forward(self, features, raw_last):
-        return self.net(torch.cat([features, raw_last], dim=-1))  # (B, 1)
+    def forward(self, geo_feat, unc_feat):
+        return self.net(torch.cat([geo_feat, unc_feat], dim=-1))
 
 
-class TCN(nn.Module):
-    def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.4,
-                 unc_d_model=32, unc_num_heads=4, unc_dropout=0.1, unc_num_layers=2,
-                 head_dims=None, use_moe=True,
-                 use_uncertainty_encoder=True, use_film=True,
-                 pos_bias_scale=0.0):
-        super(TCN, self).__init__()
+class GeoOnlyModel(nn.Module):
+    """Geo-only model for residual pre-training phase."""
+    def __init__(self, geo_dim, tcn_channels=(64, 128, 256), tcn_kernel=5,
+                 tcn_dropout=0.3, head_dims=(128, 64)):
+        super().__init__()
+        self.geo_encoder = GeoTCNEncoder(geo_dim, tcn_channels, tcn_kernel, tcn_dropout)
+        layers, prev = [], self.geo_encoder.out_dim
+        for i, h in enumerate(head_dims):
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.GELU(),
+                       nn.Dropout(0.3 if i == 0 else 0.2)]
+            prev = h
+        layers.append(nn.Linear(prev, 1))
+        self.head = nn.Sequential(*layers)
 
-        self.unc_feature_dim = 14   # 7-dim per object x 2 objects (4 raw + 3 phase)
-        self.geo_feature_dim = input_size - self.unc_feature_dim
+    def forward(self, geo_seq):
+        return self.head(self.geo_encoder(geo_seq))
 
-        self.use_uncertainty_encoder = use_uncertainty_encoder
-        self.use_film = use_film
 
-        self.unc_mlp = nn.Sequential(
-            nn.LayerNorm(4),
-            nn.Linear(4, 32),
-            nn.GELU(),
-            nn.Linear(32, 32),
-            nn.GELU(),
-            nn.Linear(32, 16),
-            nn.GELU(),
-            nn.Linear(16, 8),
-        )
+class HybridPcModel(nn.Module):
+    def __init__(self, geo_dim, n_trees, max_leaves,
+                 tcn_channels=(64, 128, 256), tcn_kernel=5, tcn_dropout=0.3,
+                 leaf_embed_dim=8, unc_out_dim=64, head_dims=(128, 64)):
+        super().__init__()
+        self.geo_encoder = GeoTCNEncoder(geo_dim, tcn_channels, tcn_kernel, tcn_dropout)
+        self.unc_encoder = XGBLeafEmbedding(n_trees, max_leaves, leaf_embed_dim, unc_out_dim)
+        self.head = RegressionHead(self.geo_encoder.out_dim, unc_out_dim, head_dims)
 
-        num_levels = len(num_channels)
-        split_idx  = num_levels // 2  # split point for multi-scale FiLM
-        out_channels = num_channels[-1]
-        mid_channels = num_channels[split_idx - 1]  # channel dim at the split
+    def forward(self, geo_seq, leaf_indices, xgb_pred):
+        geo_feat = self.geo_encoder(geo_seq)
+        unc_feat = self.unc_encoder(leaf_indices, xgb_pred)
+        return self.head(geo_feat, unc_feat)
 
-        # Stem + early TCN blocks
-        stem = nn.Conv1d(self.geo_feature_dim, num_channels[0], 1)
-        early_blocks = []
-        for i in range(split_idx):
-            in_ch  = num_channels[i - 1] if i > 0 else num_channels[0]
-            out_ch = num_channels[i]
-            early_blocks.append(TCNBlock(in_ch, out_ch, kernel_size, 2 ** i, dropout))
-
-        # Late TCN blocks
-        late_blocks = []
-        for i in range(split_idx, num_levels):
-            in_ch  = num_channels[i - 1]
-            out_ch = num_channels[i]
-            late_blocks.append(TCNBlock(in_ch, out_ch, kernel_size, 2 ** i, dropout))
-
-        self.network_early = nn.Sequential(stem, *early_blocks)
-        self.network_late  = nn.Sequential(*late_blocks)
-        self.temporal_pool = TemporalAttentionPooling(out_channels, pos_bias_scale=pos_bias_scale)
-
-        # Uncertainty encoder (can be ablated)
-        if use_uncertainty_encoder:
-            self.uncertainty_encoder = CrossAttentionUncertaintyEncoder(
-                input_dim=15,  # 8 MLP + 4 raw residual + 3 phase
-                d_model=unc_d_model,
-                num_heads=unc_num_heads,
-                output_dim=out_channels,
-                dropout=unc_dropout,
-                num_layers=unc_num_layers,
-            )
-        else:
-            self.uncertainty_encoder = None
-
-        # FiLM layers (can be ablated)
-        if use_film:
-            self.film_mid = FiLM(geo_dim=mid_channels, unc_dim=out_channels)
-            self.film     = FiLM(geo_dim=out_channels,  unc_dim=out_channels)
-        else:
-            self.film_mid = None
-            self.film     = None
-
-        # Regression head: MoE or simple single-head
-        _head_dims = head_dims if head_dims is not None else [128, 64]
-        self.use_moe = use_moe
-        if use_moe:
-            head_unc_dim = out_channels if use_uncertainty_encoder else 0
-            self.head = MoEHead(
-                feature_dim=out_channels,
-                unc_dim=head_unc_dim,
-                head_dims=_head_dims,
-            )
-        else:
-            self.head = SimpleRegressionHead(
-                feature_dim=out_channels,
-                head_dims=_head_dims,
-            )
-
-    def extract_features(self, x):
-        x_geo  = x[:, :, :-self.unc_feature_dim]     # (batch, seq_len, geo_dim)
-        x_unc1 = x[:, :, -self.unc_feature_dim:-7]   # (batch, seq_len, 7): raw(4)+phase(3)
-        x_unc2 = x[:, :, -7:]                         # (batch, seq_len, 7)
-
-        # Geo early path
-        x_geo     = x_geo.transpose(1, 2)                       # (batch, geo_dim, seq_len)
-        out_early  = self.network_early(x_geo)                   # (batch, mid_channels, seq_len)
-
-        # Uncertainty path (can be ablated)
-        if self.use_uncertainty_encoder:
-            # Split raw uncertainty features (4-dim) from debris phase (3-dim)
-            raw_unc1 = x_unc1[:, :, :4]   # (batch, seq_len, 4)
-            phase1   = x_unc1[:, :, 4:]   # (batch, seq_len, 3)
-            raw_unc2 = x_unc2[:, :, :4]   # (batch, seq_len, 4)
-            phase2   = x_unc2[:, :, 4:]   # (batch, seq_len, 3)
-
-            # MLP transforms raw features → 8-dim embedding
-            emb1 = self.unc_mlp(raw_unc1)  # (batch, seq_len, 8)
-            emb2 = self.unc_mlp(raw_unc2)  # (batch, seq_len, 8)
-
-            # Residual: concatenate MLP embedding + raw features + debris phase → 15-dim
-            unc1 = torch.cat([emb1, raw_unc1, phase1], dim=-1)  # (batch, seq_len, 15)
-            unc2 = torch.cat([emb2, raw_unc2, phase2], dim=-1)  # (batch, seq_len, 15)
-
-            fusion_unc = self.uncertainty_encoder(unc1, unc2)  # (batch, out_channels)
-
-            # Mid-level FiLM: broadcast uncertainty over time dimension
-            if self.use_film:
-                out_early = self.film_mid(out_early, fusion_unc)  # (batch, mid_channels, seq_len)
-        else:
-            fusion_unc = torch.zeros(x.size(0), 0, device=x.device)  # dummy
-
-        # Geo late path + temporal pooling
-        out_late   = self.network_late(out_early)                 # (batch, out_channels, seq_len)
-        out_geo    = self.temporal_pool(out_late)                 # (batch, out_channels)
-
-        # Final FiLM on pooled geo features
-        if self.use_film and self.use_uncertainty_encoder:
-            out_geo = self.film(out_geo, fusion_unc)              # (batch, out_channels)
-
-        raw_last = x[:, -1, :]                                    # (batch, input_size)
-        return out_geo, fusion_unc, raw_last
-
-    def forward(self, x):
-        features, fusion_unc, raw_last = self.extract_features(x)
-        if self.use_moe:
-            mixture, pred_low, pred_high, gate_logits = self.head(features, fusion_unc)
-        else:
-            pred = self.head(features, raw_last)
-            # Return MoE-compatible tuple: dummy experts + zero logits
-            mixture   = pred
-            pred_low  = pred
-            pred_high = pred
-            gate_logits = torch.zeros(pred.size(0), 2, device=pred.device)
-        return mixture, pred_low, pred_high, gate_logits
