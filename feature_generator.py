@@ -39,22 +39,48 @@ def _debris_phase(launch_age_years, a=2.0, b=7.0):
     else:
         return [0, 0, 1]
 
+import math
+
 def _build_uncertainty_features(sat, tle_age_days, tca_time, name=None):
     EPS = 1e-10
-    e     = sat.ecco
-    n     = sat.no_kozai          
+    MU = 398600.4418          # km^3/s^2
+    RE = 6378.137             # Earth radius (km)
+
+    e = sat.ecco
+    inc = sat.inclo                  # rad
+    n = sat.no_kozai                 # rad/min
     bstar = sat.bstar
-    tau   = tle_age_days
+    age = tle_age_days
+
+    n_rad_sec = n / 60.0
+    a = (MU / (n_rad_sec ** 2)) ** (1.0 / 3.0)
+    perigee = a * (1 - e) - RE
+    apogee  = a * (1 + e) - RE
+    period = 2 * math.pi / n        
+
     raw_features = [
         e,
+        inc,
         math.log(max(n, EPS)),
         math.log(abs(bstar) + EPS),
-        math.log(max(tau + 1.0, EPS)),
+        math.log1p(max(age, 0.0)),
+        age * abs(bstar),
+        age * n,
+        perigee,
+        apogee,
+        period,
     ]
-    phase = (_debris_phase(_compute_launch_age_years(sat.intldesg, tca_time),
-                           a=cfg['debris_phase']['threshold_a_years'],
-                           b=cfg['debris_phase']['threshold_b_years'])
-             if _is_debris_by_name(name) else [0, 0, 0])
+
+    debris_cfg = cfg.get("debris_phase", {})
+    phase = (
+        _debris_phase(
+            _compute_launch_age_years(sat.intldesg, tca_time),
+            a=debris_cfg.get("threshold_a_years", 2.0),
+            b=debris_cfg.get("threshold_b_years", 7.0),
+        )
+        if _is_debris_by_name(name)
+        else [0, 0, 0]
+    )
     return raw_features + phase
 
 def _encounter_plane_distance(r_rel, v_rel):

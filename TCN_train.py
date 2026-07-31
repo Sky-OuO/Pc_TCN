@@ -15,18 +15,16 @@ from datetime import datetime
 
 
 class _GeoOnlyDataset:
-    def __init__(self, geo, labels, weights=None):
+    def __init__(self, geo, labels):
         self.geo = geo
         self.labels = labels
-        self.weights = weights if weights is not None else np.ones(len(labels), dtype=np.float32)
 
     def __len__(self):
         return len(self.geo)
 
     def __getitem__(self, idx):
         return (torch.from_numpy(self.geo[idx]).float(),
-                torch.tensor([self.labels[idx]], dtype=torch.float32),
-                torch.tensor([self.weights[idx]], dtype=torch.float32))
+                torch.tensor([self.labels[idx]], dtype=torch.float32))
 
 
 def train_geo_only(model, geo_seq, labels, val_geo, val_labels, cfg, device, timestamp):
@@ -53,10 +51,10 @@ def train_geo_only(model, geo_seq, labels, val_geo, val_labels, cfg, device, tim
     for epoch in range(cfg['training']['num_epochs']):
         model.train()
         train_loss = 0.0
-        for geo, lbl, w in train_loader:
-            geo, lbl, w = geo.to(device), lbl.to(device), w.to(device)
+        for geo, lbl in train_loader:
+            geo, lbl = geo.to(device), lbl.to(device)
             optimizer.zero_grad()
-            loss = (criterion(model(geo), lbl) * w).mean()
+            loss = criterion(model(geo), lbl)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -67,7 +65,7 @@ def train_geo_only(model, geo_seq, labels, val_geo, val_labels, cfg, device, tim
         val_loss = 0.0
         preds, gts = [], []
         with torch.no_grad():
-            for geo, lbl, _ in val_loader:
+            for geo, lbl in val_loader:
                 geo, lbl = geo.to(device), lbl.to(device)
                 p = model(geo)
                 val_loss += torch.nn.functional.mse_loss(p, lbl, reduction='sum').item()
@@ -136,7 +134,7 @@ if __name__ == "__main__":
     loader_geo = DataLoader(ds_geo, batch_size=cfg['training']['batch_size'], shuffle=False,
                             num_workers=0, pin_memory=True)
     with torch.no_grad():
-        for geo, _, _ in loader_geo:
+        for geo, _ in loader_geo:
             train_geo_preds.append(geo_model(geo.to(device)).cpu().numpy().flatten())
     train_geo_preds = np.concatenate(train_geo_preds)
 

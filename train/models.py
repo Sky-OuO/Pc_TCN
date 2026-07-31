@@ -124,8 +124,39 @@ class RegressionHead(nn.Module):
         return self.net(torch.cat([geo_feat, unc_feat], dim=-1))
 
 
+class FiLM(nn.Module):
+    def __init__(self, cond_dim, feat_dim, hidden_dim=None):
+        super().__init__()
+        hidden_dim = hidden_dim if hidden_dim is not None else max(16, feat_dim // 2)
+        self.net = nn.Sequential(
+            nn.Linear(cond_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, feat_dim * 2),
+        )
+
+    def forward(self, feat, cond):
+        gamma, beta = self.net(cond).chunk(2, dim=-1)
+        return feat * (1.0 + gamma) + beta
+
+
+class FusionMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims=(128, 64), dropout=0.3):
+        super().__init__()
+        layers, prev = [], input_dim
+        for i, h in enumerate(hidden_dims):
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.GELU(),
+                       nn.Dropout(dropout if i == 0 else dropout * 0.7)]
+            prev = h
+        self.hidden = nn.Sequential(*layers)
+        self.out = nn.Linear(prev, 1)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def forward(self, x):
+        return self.out(self.hidden(x))
+
+
 class GeoOnlyModel(nn.Module):
-    """Geo-only model for residual pre-training phase."""
     def __init__(self, geo_dim, tcn_channels=(64, 128, 256), tcn_kernel=5,
                  tcn_dropout=0.3, head_dims=(128, 64)):
         super().__init__()
@@ -149,10 +180,14 @@ class HybridPcModel(nn.Module):
         super().__init__()
         self.geo_encoder = GeoTCNEncoder(geo_dim, tcn_channels, tcn_kernel, tcn_dropout)
         self.unc_encoder = XGBLeafEmbedding(n_trees, max_leaves, leaf_embed_dim, unc_out_dim)
-        self.head = RegressionHead(self.geo_encoder.out_dim, unc_out_dim, head_dims)
+        self.film = FiLM(1, self.geo_encoder.out_dim)
+        fusion_in_dim = self.geo_encoder.out_dim + unc_out_dim + 1
+        self.head = FusionMLP(fusion_in_dim, head_dims)
 
     def forward(self, geo_seq, leaf_indices, xgb_pred):
-        geo_feat = self.geo_encoder(geo_seq)
+        residual = xgb_pred
+        geo_feat = self.film(self.geo_encoder(geo_seq), residual)
         unc_feat = self.unc_encoder(leaf_indices, xgb_pred)
-        return self.head(geo_feat, unc_feat)
+        delta_residual = self.head(torch.cat([geo_feat, unc_feat, residual], dim=-1))
+        return residual + delta_residual
 

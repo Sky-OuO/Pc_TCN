@@ -35,8 +35,8 @@
         "out_dim": 64
     },
     "loss": {
-        "high_pc_threshold": -4,
-        "alpha_high": 0.0
+        "high_pc_threshold": -4.0,
+        "alpha_high": 2.0
     },
     "training": {
         "num_epochs": 200,
