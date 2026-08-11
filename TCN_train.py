@@ -6,7 +6,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from train.models import GeoOnlyModel, HybridPcModel, XGBoostUncertaintyBranch
 from train.dataset import HybridDataset
-from train.loss import AsymmetricMSELoss
 from train.trainer import train_model
 from train.data_utils import load_hybrid_data
 from train.evaluate import evaluate_best_model
@@ -183,9 +182,7 @@ if __name__ == "__main__":
         head_dims=head_cfg.get('dims', [64, 32]))
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    criterion = AsymmetricMSELoss(
-        high_pc_threshold=cfg['loss'].get('high_pc_threshold', -4.0),
-        alpha_high=cfg['loss'].get('alpha_high', 0.0))
+    criterion = torch.nn.MSELoss(reduction='none')
     val_criterion = torch.nn.MSELoss()
 
     optimizer = torch.optim.AdamW(
